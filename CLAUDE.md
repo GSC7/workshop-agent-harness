@@ -54,8 +54,8 @@ Infra: `infra/nginx/`.
 
 ### Issue tracker
 
-Issues e PRDs vivem como GitHub Issues do repo `caio-moliveira/workshop-agent-harness`, via `gh`
-CLI. Ver `docs/agents/issue-tracker.md`.
+Issues e PRDs vivem como GitHub Issues do repo `GSC7/workshop-agent-harness` (fork; `upstream` =
+repo original do workshop), via `gh` CLI. Ver `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

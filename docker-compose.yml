@@ -35,7 +35,7 @@ services:
       - qdrant_data:/qdrant/storage
 
   minio:
-    image: minio/minio:latest            # (pinar versão em produção — RNF-05)
+    image: cgr.dev/chainguard/minio:latest  # minio/minio saiu do Docker Hub (pinar versão em produção — RNF-05)
     container_name: workshop-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
