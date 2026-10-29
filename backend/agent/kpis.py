@@ -106,13 +106,19 @@ def sql_kpi(kpi: str, eixo: str, meses: int) -> str:
     )
 
 
+Classificacao = Literal["queda_real", "sazonal", "saudavel"]
+
+
 @dataclass(frozen=True)
 class KpiAvaliado:
     kpi: str
     eixo: str
     dimensao: str
     gap_medio: float  # média de realizado/meta - 1 nos meses recentes (negativo = abaixo)
-    serie: list[dict[str, Any]]  # [{mes, realizado, meta}] p/ o relatório e a UI
+    # Recentes vs os mesmos meses dos 2 anos anteriores; None sem histórico comparável.
+    variacao_yoy: float | None
+    classificacao: Classificacao
+    serie: list[dict[str, Any]]  # [{mes, realizado, meta}] recentes, p/ o relatório e a UI
 
     @property
     def abaixo_da_meta(self) -> bool:
@@ -123,29 +129,84 @@ def _num(v: Any) -> float:
     return float(v) if isinstance(v, (int, float, Decimal)) else 0.0
 
 
+def _realizado(linha: dict[str, Any]) -> float | None:
+    """NULL (ex.: nullif de sessões = 0) é ausência de dado, não realizado zero."""
+    v = linha["realizado"]
+    return float(v) if isinstance(v, (int, float, Decimal)) else None
+
+
+def _mesmo_mes(mes: str, anos_atras: int) -> str:
+    return f"{int(mes[:4]) - anos_atras:04d}{mes[4:]}"
+
+
+def classificar(
+    gap: float, yoy: float | None, limiar_meta: float, limiar_yoy: float
+) -> Classificacao:
+    """Abaixo da meta só é queda real se também cai contra o mesmo período dos anos anteriores.
+
+    Abaixo da meta mas em linha com o histórico = sazonal (o padrão é o de sempre; a meta é que
+    está alta). Sem histórico não se presume sazonalidade (ADR 0007).
+    """
+    if gap >= -limiar_meta:
+        return "saudavel"
+    if yoy is None or yoy < -limiar_yoy:
+        return "queda_real"
+    return "sazonal"
+
+
 def avaliar(
-    kpi: str, eixo: str, linhas: list[dict[str, Any]], meses_recentes: int
+    kpi: str,
+    eixo: str,
+    linhas: list[dict[str, Any]],
+    meses_recentes: int,
+    limiar_meta: float,
+    limiar_yoy: float,
+    meses_serie: int = 6,
 ) -> list[KpiAvaliado]:
-    """Gap médio realizado x meta nos últimos meses, por valor do eixo; pior primeiro."""
-    por_dim: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    """Gap vs meta e variação vs anos anteriores, por valor do eixo; pior gap primeiro."""
+    por_dim: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for linha in linhas:
-        por_dim[str(linha["dimensao"])].append(linha)
+        por_dim[str(linha["dimensao"])][str(linha["mes"])] = linha
     avaliados: list[KpiAvaliado] = []
-    for dim, serie in por_dim.items():
-        serie = sorted(serie, key=lambda r: str(r["mes"]))
-        recentes = [r for r in serie[-meses_recentes:] if _num(r["meta"]) > 0]
+    for dim, por_mes in por_dim.items():
+        meses = sorted(por_mes)
+        recentes = [
+            m
+            for m in meses[-meses_recentes:]
+            if _num(por_mes[m]["meta"]) > 0 and _realizado(por_mes[m]) is not None
+        ]
         if not recentes:
             continue
-        gaps = [_num(r["realizado"]) / _num(r["meta"]) - 1 for r in recentes]
+        real = {m: _realizado(por_mes[m]) or 0.0 for m in recentes}
+        gap = sum(real[m] / _num(por_mes[m]["meta"]) - 1 for m in recentes) / len(recentes)
+        # Mês a mês, só onde há histórico: nunca compara abr-jun com só abril de antes.
+        razoes: list[float] = []
+        for m in recentes:
+            base = [
+                r
+                for anos in (1, 2)
+                if (anterior := _mesmo_mes(m, anos)) in por_mes
+                and (r := _realizado(por_mes[anterior])) is not None
+                and r > 0
+            ]
+            if base:
+                razoes.append(real[m] / (sum(base) / len(base)))
+        yoy = sum(razoes) / len(razoes) - 1 if razoes else None
         avaliados.append(
             KpiAvaliado(
                 kpi=kpi,
                 eixo=eixo,
                 dimensao=dim,
-                gap_medio=sum(gaps) / len(gaps),
+                gap_medio=gap,
+                variacao_yoy=yoy,
+                classificacao=classificar(gap, yoy, limiar_meta, limiar_yoy),
                 serie=[
-                    {"mes": r["mes"], "realizado": _num(r["realizado"]), "meta": _num(r["meta"])}
-                    for r in serie
+                    {
+                        "mes": m,
+                        "realizado": _realizado(por_mes[m]),
+                        "meta": _num(por_mes[m]["meta"]),
+                    }
+                    for m in meses[-meses_serie:]
                 ],
             )
         )
