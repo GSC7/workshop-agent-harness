@@ -143,12 +143,18 @@ class QdrantFake:
     payloads: list[dict[str, Any]] = field(default_factory=list)
     chamadas: list[dict[str, Any]] = field(default_factory=list)
     erro: Exception | None = None
+    por_colecao: dict[str, list[dict[str, Any]]] | None = None  # docs distintos por coleção
 
     async def query_points(self, **kwargs: Any) -> _RespostaFake:
         self.chamadas.append(kwargs)
         if self.erro is not None:
             raise self.erro
-        pontos = [_PontoFake(0.9 - i / 10, p) for i, p in enumerate(self.payloads)]
+        payloads = (
+            self.por_colecao.get(kwargs["collection_name"], [])
+            if self.por_colecao is not None
+            else self.payloads
+        )
+        pontos = [_PontoFake(0.9 - i / 10, p) for i, p in enumerate(payloads)]
         return _RespostaFake(pontos[: kwargs["limit"]])
 
 
@@ -211,3 +217,18 @@ def linhas_historico(dimensoes: dict[str, dict[int, float]], meta_2026: float = 
         for ano, valor in anos.items()
         for m in range(1, 7)
     ]
+
+
+@dataclass
+class RecomendadorFake:
+    """Devolve as recomendações configuradas (inclusive inválidas, p/ testar o guardrail)."""
+
+    recomendacoes: list[Any] = field(default_factory=list)  # agent.grounding.Recomendacao
+    erro: Exception | None = None
+    contextos: list[str] = field(default_factory=list)
+
+    async def recomendar(self, contexto: str) -> list[Any]:
+        self.contextos.append(contexto)
+        if self.erro is not None:
+            raise self.erro
+        return self.recomendacoes

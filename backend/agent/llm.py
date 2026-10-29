@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from agent.grounding import ListaRecomendacoes, Recomendacao
 from agent.state import Plano
 
 _SISTEMA_PLANO = (
@@ -19,30 +20,39 @@ _SISTEMA_PLANO = (
     "Eixos possíveis: regiao (Norte, Nordeste, Centro-Oeste, Sudeste, Sul), "
     "canal (site_proprio, marketplace, loja_fisica) e categoria de produto. "
     "Preencha só o que a pergunta cita; pergunta genérica ('minhas vendas') = kpis vazio. "
-    "fora_do_escopo = true só se a pergunta não tiver relação com vendas ou indicadores comerciais."
+    "fora_do_escopo = true só se a pergunta não tiver relação com vendas ou indicadores comerciais "
+    "(ex.: 'Como melhorar minhas vendas?' NÃO é fora do escopo)."
 )
 
 _SISTEMA_RELATORIO = """Você é um analista comercial. Escreva, em português do Brasil e em \
-Markdown, a continuação de um relatório de melhoria para o `periodo_alvo`, usando \
-SOMENTE os dados do contexto JSON. A seção "Premissas" JÁ foi escrita: não a repita.
+Markdown, a parte analítica de um relatório para o `periodo_alvo`, usando SOMENTE os dados do \
+contexto JSON. Premissas, recomendações e histórico de tentativas são escritos à parte pelo \
+sistema: NÃO os escreva.
 
 Estrutura:
 ## Diagnóstico — cada item de `kpis_queda_real` com dimensão, `desvio_vs_meta_pct` e \
 `variacao_vs_anos_anteriores_pct` exatos (não recalcule). Depois, numa subseção "Dentro do padrão \
-histórico", cada item de `kpis_sazonais`: está abaixo da meta mas igual ao mesmo período dos \
-anos anteriores — é sazonalidade ou meta alta, não queda real; não recomende ação para eles.
-## Causas prováveis — só para queda real, a partir das fontes de diagnóstico.
-## Recomendações priorizadas — só para queda real; cada uma termina com a fonte que a sustenta \
-entre colchetes, copiando exatamente o campo `fonte` (ex.: [minio://corpus/prescricao/...md]).
-## O que já funcionou e o que não funcionou — pelo campo `resultado` das prescrições; omita \
-esta seção se não houver fonte de prescrição no contexto.
+histórico", cada item de `kpis_sazonais`: abaixo da meta mas igual ao mesmo período dos anos \
+anteriores — sazonalidade ou meta alta, não queda real.
+## Causas prováveis — só para queda real, a partir das fontes de `colecao` diagnostico, citando \
+cada uma entre colchetes com o campo `fonte` exato (ex.: [minio://corpus/diagnostico/...md]). \
+Cite a fonte só para o KPI de `para_kpi`/`para_dimensao`. Sem fonte de diagnóstico, diga que a \
+causa não está documentada.
 
 Se o contexto trouxer `avisos`, declare-os numa linha logo no início (limitações do run).
-Cada fonte traz `colecao` e `para_kpi`/`para_dimensao`: cite-a só para o KPI que ela explica.
+Não invente números nem fontes. Sem nenhum KPI em queda real, diga que não há queda real a \
+corrigir (citando os sazonais, se houver)."""
 
-Regras: não invente números nem fontes. Recomendação sem fonte no contexto não entra; se não \
-houver prescrição com fonte, diga isso explicitamente. Sem nenhum KPI em queda real, diga que \
-não há queda real a corrigir (cite os sazonais, se houver) e não faça recomendações."""
+_SISTEMA_RECOMENDACAO = """Você propõe recomendações para KPIs em queda real, em português do \
+Brasil, usando SOMENTE as fontes do contexto JSON.
+
+Regras:
+- Cada recomendação se apoia em UMA fonte com `colecao` = prescricao, cujo `para_kpi` e \
+`para_dimensao` sejam o `kpi` e a `dimensao` da recomendação. Copie o campo `fonte` exato.
+- Resultado positivo → repetir/adaptar a ação. Resultado nulo ou negativo → recomendar evitar.
+- Priorize por impacto provável no KPI no `periodo_alvo` (1 = mais importante). Até 5 itens.
+- Justificativa curta, com o que a fonte relata (números dela, se houver). Não invente.
+- Sem prescrição adequada, devolva a lista vazia."""
 
 
 Provedor = Literal["openai", "anthropic"]
@@ -103,3 +113,16 @@ class RedatorLLM:
         async for pedaco in self._llm.astream(mensagens):
             if texto := pedaco.text:
                 yield texto
+
+
+class RecomendadorLLM:
+    """Modelo forte com saída estruturada; o grafo valida cada fonte antes de usar."""
+
+    def __init__(self, modelo: BaseChatModel) -> None:
+        self._llm = modelo.with_structured_output(ListaRecomendacoes, method="json_schema")
+
+    async def recomendar(self, contexto: str) -> list[Recomendacao]:
+        saida = await self._llm.ainvoke(
+            [SystemMessage(_SISTEMA_RECOMENDACAO), HumanMessage(f"Contexto JSON:\n{contexto}")]
+        )
+        return cast(ListaRecomendacoes, saida).recomendacoes

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-import unicodedata
+import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import date
@@ -16,6 +16,17 @@ from langgraph.graph.state import CompiledStateGraph
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from agent.grounding import (
+    MotivoAusencia,
+    Recomendacao,
+    citacoes_de_prescricao,
+    citacoes_sem_fonte,
+    citacoes_validas,
+    historico_markdown,
+    normalizar,
+    recomendacoes_markdown,
+    validar_recomendacoes,
+)
 from agent.kpis import Classificacao, KpiAvaliado, avaliar, pares, sql_kpi
 from agent.periodo import mes_nomeado, periodo_alvo
 from agent.state import EstadoAgente, Plano
@@ -30,6 +41,10 @@ _CAMPO_DIMENSAO = {"regiao": "regiao", "canal": "canal", "categoria": "produto"}
 
 class Planejador(Protocol):
     async def planejar(self, pergunta: str) -> Plano: ...
+
+
+class Recomendador(Protocol):
+    async def recomendar(self, contexto: str) -> list[Recomendacao]: ...
 
 
 class Redator(Protocol):
@@ -56,13 +71,12 @@ class Dependencias:
     embedder: Embedder | None
     planejador: Planejador
     redator: Redator
+    recomendador: Recomendador
     config: ConfigAnalise = ConfigAnalise()
     hoje: Callable[[], date] = date.today  # injetável: período-alvo testável
 
 
-def _norm(texto: str) -> str:
-    sem_acento = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
-    return sem_acento.casefold().strip()
+_norm = normalizar
 
 
 def selecionar_fracos(
@@ -78,6 +92,19 @@ def selecionar_fracos(
         avaliados = filtrados or avaliados  # valor desconhecido: não zera a análise
     escolhidos = [a for a in avaliados if a.classificacao == classificacao]
     return sorted(escolhidos, key=lambda a: a.gap_medio)[:maximo]
+
+
+# Vocabulário do domínio comercial: presença dele veta a clarificação (o LLM rápido marcou
+# "como melhorar minhas vendas?" como fora do escopo no smoke real).
+_DOMINIO = re.compile(
+    r"\b(vend\w*|fatur\w*|receita|ticket|recompra\w*|convers\w*|clientes?|pedidos?|lojas?"
+    r"|canal|canais|regi\w*|marketplace|site|categori\w*|produtos?|metas?|kpis?|indicador\w*"
+    r"|campanha\w*|comercial)\b"
+)
+
+
+def parece_do_dominio(pergunta: str) -> bool:
+    return bool(_DOMINIO.search(normalizar(pergunta)))
 
 
 _CLARIFICACAO = (
@@ -159,8 +186,26 @@ def _contexto_relatorio(estado: EstadoAgente) -> str:
                 _kpi_para_llm(s, "abaixo da meta, em linha com o mesmo período dos anos anteriores")
                 for s in estado.get("sazonais", [])
             ],
-            "fontes_recuperadas": [asdict(h) for h in estado.get("hits", [])],
+            # Só diagnóstico: prescrição é assunto da seção validada, não do texto livre.
+            "fontes_recuperadas": [
+                asdict(h)
+                for h in estado.get("hits", [])
+                if h.metadados.get("colecao") == "diagnostico"
+            ],
             "avisos": estado.get("avisos", []),
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def _contexto_recomendacao(estado: EstadoAgente) -> str:
+    """Só KPIs em queda real e as fontes do run: a origem (para_kpi/para_dimensao) vai junto."""
+    return json.dumps(
+        {
+            "periodo_alvo": estado.get("premissas", {}).get("periodo_alvo"),
+            "kpis_queda_real": [_kpi_para_llm(f, "queda real") for f in estado.get("fracos", [])],
+            "fontes": [asdict(h) for h in estado.get("hits", [])],
         },
         ensure_ascii=False,
         default=str,
@@ -174,7 +219,14 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         get_stream_writer()({"tipo": "etapa", "nome": "planejar"})
         plano = await deps.planejador.planejar(estado["pergunta"])
         # Mês-alvo vem do texto, não do LLM (no smoke ele "citou" 11 para "próximo mês").
-        plano = plano.model_copy(update={"mes_citado": mes_nomeado(estado["pergunta"])})
+        plano = plano.model_copy(
+            update={
+                "mes_citado": mes_nomeado(estado["pergunta"]),
+                # Barreira em código: pergunta com vocabulário de vendas nunca vira clarificação.
+                "fora_do_escopo": plano.fora_do_escopo
+                and not parece_do_dominio(estado["pergunta"]),
+            }
+        )
         get_stream_writer()({"tipo": "plano", "plano": plano.model_dump()})
         return {"plano": plano}
 
@@ -276,12 +328,16 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
                     continue
                 for h in achados:
                     # Origem explícita: o redator não pode atribuir a fonte ao KPI errado.
-                    origem = {
+                    origem: dict[str, Any] = {
                         "colecao": colecao,
                         "para_kpi": fraco.kpi,
                         "para_dimensao": fraco.dimensao,
                     }
-                    hits.setdefault(h.fonte, replace(h, metadados={**h.metadados, **origem}))
+                    if h.fonte in hits:  # mesma fonte explica outro KPI fraco: soma o alvo
+                        hits[h.fonte].metadados["alvos"].append([fraco.kpi, fraco.dimensao])
+                        continue
+                    origem["alvos"] = [[fraco.kpi, fraco.dimensao]]
+                    hits[h.fonte] = replace(h, metadados={**h.metadados, **origem})
         escrever(
             {
                 "tipo": "fontes",
@@ -290,19 +346,108 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         )
         return {"hits": list(hits.values()), "avisos": avisos}
 
+    async def recomendar(estado: EstadoAgente) -> dict[str, Any]:
+        """LLM propõe; o código só deixa passar o que tem fonte de prescrição deste run."""
+        escrever = get_stream_writer()
+        escrever({"tipo": "etapa", "nome": "recomendar"})
+        hits = estado.get("hits", [])
+        motivo: MotivoAusencia = "sem_prescricao"
+        validas: list[Recomendacao] = []
+        avisos: list[str] = []
+        if any(h.metadados.get("colecao") == "prescricao" for h in hits):
+            try:
+                propostas = await deps.recomendador.recomendar(_contexto_recomendacao(estado))
+            except Exception as exc:
+                logger.warning("recomendador falhou (%s)", type(exc).__name__)
+                propostas, motivo = [], "falha"
+                avisos.append("recomendações indisponíveis neste run (falha ao gerar)")
+            validas, descartadas = validar_recomendacoes(propostas, hits)
+            if not propostas and motivo != "falha":
+                motivo = "nenhuma_aplicavel"  # houve prescrição, mas o LLM não viu aplicação
+            if descartadas:
+                if not validas and motivo != "falha":
+                    motivo = "descartadas"
+                # Ação descartada não vai ao estado (e daí ao redator): só a contagem.
+                avisos.append(
+                    f"{len(descartadas)} recomendação(ões) descartada(s) sem fonte válida"
+                )
+                escrever(
+                    {
+                        "tipo": "recomendacoes_descartadas",
+                        "itens": [{"motivo": m, "fonte": r.fonte} for r, m in descartadas],
+                    }
+                )
+                for r, m in descartadas:
+                    logger.info("recomendação descartada (%s): %s", m, r.acao)
+        for aviso in avisos:
+            escrever({"tipo": "aviso", "mensagem": aviso})
+        escrever({"tipo": "recomendacoes", "recomendacoes": [r.model_dump() for r in validas]})
+        return {"recomendacoes": validas, "motivo_sem_recomendacao": motivo, "avisos": avisos}
+
     async def relatorio(estado: EstadoAgente) -> dict[str, Any]:
         escrever = get_stream_writer()
         escrever({"tipo": "etapa", "nome": "relatorio"})
+        hits = estado.get("hits", [])
+        if "recomendacoes" not in estado:  # sem queda real o nó recomendar não roda; UI estável
+            escrever({"tipo": "recomendacoes", "recomendacoes": []})
+
+        def emitir(texto: str) -> None:
+            if texto:
+                partes.append(texto)
+                escrever({"tipo": "relatorio", "texto": texto})
+
+        partes: list[str] = []
         # Premissas no topo escritas pelo código: o relatório nunca sai sem elas.
-        partes = (
-            [_premissas_markdown(estado.get("premissas", {}))] if estado.get("premissas") else []
-        )
-        if partes:
-            escrever({"tipo": "relatorio", "texto": partes[0]})
+        if estado.get("premissas"):
+            emitir(_premissas_markdown(estado["premissas"]))
+        narrativa: list[str] = []  # diagnóstico e causas: única parte livre do LLM
         async for delta in deps.redator.redigir(estado["pergunta"], _contexto_relatorio(estado)):
-            partes.append(delta)
-            escrever({"tipo": "relatorio", "texto": delta})
-        return {"relatorio": "".join(partes)}
+            narrativa.append(delta)
+            emitir(delta)
+        emitir("\n\n")
+        # Seções prescritivas escritas pelo código, só com o que passou na validação.
+        recomendacoes = estado.get("recomendacoes", [])
+        emitir(
+            recomendacoes_markdown(
+                recomendacoes,
+                tem_queda_real=bool(estado.get("fracos")),
+                motivo=estado.get("motivo_sem_recomendacao", "sem_prescricao"),
+            )
+        )
+        emitir(historico_markdown(hits) if estado.get("fracos") else "")
+        texto_livre = "".join(narrativa)
+        prescricoes_no_texto = citacoes_de_prescricao(texto_livre, hits)
+        avisos = [
+            f"citação sem fonte recuperada no texto: {c}"
+            for c in citacoes_sem_fonte(texto_livre, hits)
+        ] + [f"prescrição citada fora da seção de recomendações: {c}" for c in prescricoes_no_texto]
+        for aviso in avisos:
+            escrever({"tipo": "aviso", "mensagem": aviso})
+        if avisos:
+            emitir(
+                "> ⚠️ O diagnóstico/causas acima cita fonte fora do permitido (não recuperada "
+                "neste run, ou prescrição fora da seção validada): "
+                + ", ".join(a.split(": ", 1)[1] for a in avisos)
+                + ". Desconsidere essa citação.\n"
+            )
+        # Só o que o relatório exibe: recomendações, histórico (prescrições com resultado) e
+        # citações do texto livre que são diagnóstico (prescrição no texto livre não conta).
+        historico = [
+            h.fonte
+            for h in hits
+            if estado.get("fracos")
+            and h.metadados.get("colecao") == "prescricao"
+            and h.metadados.get("resultado")
+        ]
+        citadas = list(
+            dict.fromkeys(
+                [r.fonte for r in recomendacoes]
+                + historico
+                + [c for c in citacoes_validas(texto_livre, hits) if c not in prescricoes_no_texto]
+            )
+        )
+        escrever({"tipo": "fontes_citadas", "fontes": citadas})
+        return {"relatorio": "".join(partes), "avisos": avisos}
 
     # As stubs do langgraph 1.2.6 rejeitam no mypy até o exemplo canônico de add_node
     # (TypedDictLike); o ignore é só nessa linha — o resto da cadeia fica tipado como Any.
@@ -312,6 +457,7 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         .add_node("clarificar", clarificar)
         .add_node("perna_quantitativa", perna_quantitativa)
         .add_node("enriquecer", enriquecer)
+        .add_node("recomendar", recomendar)
         .add_node("relatorio", relatorio)
         .add_edge(START, "planejar")
         .add_conditional_edges("planejar", rota_pos_plano, ["clarificar", "perna_quantitativa"])
@@ -319,7 +465,8 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         .add_conditional_edges(
             "perna_quantitativa", rota_pos_quantitativa, ["enriquecer", "relatorio"]
         )
-        .add_edge("enriquecer", "relatorio")
+        .add_edge("enriquecer", "recomendar")
+        .add_edge("recomendar", "relatorio")
         .add_edge("relatorio", END)
         .compile()
     )
