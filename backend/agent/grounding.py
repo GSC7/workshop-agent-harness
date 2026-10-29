@@ -25,19 +25,26 @@ class Recomendacao(BaseModel):
     acao: str = Field(description="Ação concreta para o período-alvo.")
     justificativa: str = Field(description="Por que, com base no que a fonte relata.")
     fonte: str = Field(description="Campo `fonte` exato de uma prescrição do contexto.")
+    retomada: bool = Field(
+        default=False,
+        description="true se a ação já foi recomendada num relatório anterior do contexto.",
+    )
 
 
 class ListaRecomendacoes(BaseModel):
     recomendacoes: list[Recomendacao] = Field(default_factory=list)
 
 
-MotivoAusencia = Literal["sem_prescricao", "nenhuma_aplicavel", "falha", "descartadas"]
+MotivoAusencia = Literal[
+    "sem_prescricao", "nenhuma_aplicavel", "falha", "descartadas", "so_retomadas"
+]
 
 _MENSAGEM_AUSENCIA: dict[str, str] = {
     "sem_prescricao": "nenhuma prescrição com fonte rastreável foi recuperada para os KPIs em "
     "queda real",
     "nenhuma_aplicavel": "nenhuma das prescrições recuperadas se aplica aos KPIs em queda real",
     "falha": "a geração de recomendações falhou neste run",
+    "so_retomadas": "não há ação nova além das já recomendadas (veja o acompanhamento abaixo)",
     "descartadas": "toda recomendação proposta foi descartada porque não tinha fonte válida "
     "de prescrição deste run",
 }
@@ -76,6 +83,10 @@ def validar_recomendacoes(
     for rec in sorted(recomendacoes, key=lambda r: r.prioridade):
         fonte = _limpar_fonte(rec.fonte)
         hit = prescricoes.get(fonte)
+        if hit is not None and hit.metadados.get("subtipo") == "relatorio_anterior":
+            # Relatório anterior é o que já foi dito, não uma tentativa documentada (RF-09).
+            descartadas.append((rec, "fonte é um relatório anterior, não uma prescrição"))
+            continue
         if hit is None:
             motivo = (
                 "fonte não é da coleção prescricao"
@@ -169,3 +180,15 @@ def citacoes_de_prescricao(texto: str, hits: Sequence[Hit]) -> list[str]:
     """Prescrição citada no texto livre: recomendação só pode sair na seção validada."""
     prescricoes = _prescricoes(hits)
     return list(dict.fromkeys(c for c in _CITACAO.findall(texto) if c in prescricoes))
+
+
+def acompanhamento_markdown(retomadas: Sequence[Recomendacao]) -> str:
+    """Já recomendado (nesta conversa ou em relatório anterior): cobrar, não repetir (RF-09)."""
+    if not retomadas:
+        return ""
+    itens = "\n".join(f"- **{r.acao}** ({r.kpi} · {r.dimensao}) [{r.fonte}]" for r in retomadas)
+    return (
+        "## Acompanhamento do que já foi recomendado\n\n"
+        "Estas ações já foram recomendadas antes. Em vez de repeti-las, cobre a execução e meça "
+        f"o efeito no KPI:\n{itens}\n\n"
+    )

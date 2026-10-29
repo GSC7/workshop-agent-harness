@@ -16,8 +16,10 @@ from langgraph.graph.state import CompiledStateGraph
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from agent.conversa import chave, herdar, ja_recomendadas
 from agent.grounding import (
     MotivoAusencia,
+    acompanhamento_markdown,
     Recomendacao,
     citacoes_de_prescricao,
     citacoes_sem_fonte,
@@ -127,12 +129,17 @@ def _premissas(
     recentes = meses[-cfg.meses_recentes :]
     return {
         "periodo_alvo": periodo_alvo(hoje, plano.mes_citado),
-        "origem_periodo": "mês citado na pergunta, próxima ocorrência"
-        if plano.mes_citado
-        else "mês atual + 1",
+        "origem_periodo": (
+            "herdado do turno anterior"
+            if "mes_citado" in plano.herdados
+            else "mês citado na pergunta, próxima ocorrência"
+            if plano.mes_citado
+            else "mês atual + 1"
+        ),
         "kpis": sorted({k for k, _ in executados}),
         "eixos": sorted({e for _, e in executados}),
         "valor": plano.valor,
+        "herdado": list(plano.herdados),
         "dados_ate": meses[-1] if meses else None,
         "janela_recente": f"{recentes[0]} a {recentes[-1]}" if recentes else None,
         "comparacao_sazonal": "mesmos meses dos 2 anos anteriores",
@@ -145,7 +152,12 @@ def _premissas(
 
 def _premissas_markdown(p: dict[str, Any]) -> str:
     kpis = ", ".join(p["kpis"]) or "nenhum"
-    recorte = ", ".join(p["eixos"]) + (f" (valor citado: {p['valor']})" if p["valor"] else "")
+    origem_valor = "herdado do turno anterior" if "valor" in p.get("herdado", []) else "citado"
+    recorte = ", ".join(p["eixos"]) + (
+        f" (valor {origem_valor}: {p['valor']})" if p["valor"] else ""
+    )
+    if "kpis" in p.get("herdado", []):
+        kpis += " (herdado do turno anterior)"
     return (
         "## Premissas\n\n"
         f"- **Período-alvo:** {p['periodo_alvo']} ({p['origem_periodo']})\n"
@@ -205,7 +217,20 @@ def _contexto_recomendacao(estado: EstadoAgente) -> str:
         {
             "periodo_alvo": estado.get("premissas", {}).get("periodo_alvo"),
             "kpis_queda_real": [_kpi_para_llm(f, "queda real") for f in estado.get("fracos", [])],
-            "fontes": [asdict(h) for h in estado.get("hits", [])],
+            "fontes": [
+                asdict(h)
+                for h in estado.get("hits", [])
+                if h.metadados.get("subtipo") != "relatorio_anterior"
+            ],
+            # O que já foi dito: não repetir tal e qual; marcar retomada (RF-09).
+            "relatorios_anteriores": [
+                h.texto
+                for h in estado.get("hits", [])
+                if h.metadados.get("subtipo") == "relatorio_anterior"
+            ],
+            "ja_recomendado_nesta_conversa": (
+                turno.recomendacoes if (turno := estado.get("turno_anterior")) else []
+            ),
         },
         ensure_ascii=False,
         default=str,
@@ -227,6 +252,8 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
                 and not parece_do_dominio(estado["pergunta"]),
             }
         )
+        # Acompanhamento herda do turno anterior o que a pergunta nova não cita (código, #7).
+        plano = herdar(plano, estado.get("turno_anterior"))
         get_stream_writer()({"tipo": "plano", "plano": plano.model_dump()})
         return {"plano": plano}
 
@@ -379,10 +406,23 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
                 )
                 for r, m in descartadas:
                     logger.info("recomendação descartada (%s): %s", m, r.acao)
+        # Não repetir: já entregue nesta conversa (código) ou já dito em relatório anterior (LLM).
+        ja = ja_recomendadas(estado.get("turno_anterior"))
+        retomadas = [r for r in validas if r.retomada or chave(r.fonte, r.kpi, r.dimensao) in ja]
+        novas = [r for r in validas if r not in retomadas]
+        novas = [r.model_copy(update={"prioridade": i}) for i, r in enumerate(novas, 1)]
+        if validas and not novas:
+            motivo = "so_retomadas"
         for aviso in avisos:
             escrever({"tipo": "aviso", "mensagem": aviso})
-        escrever({"tipo": "recomendacoes", "recomendacoes": [r.model_dump() for r in validas]})
-        return {"recomendacoes": validas, "motivo_sem_recomendacao": motivo, "avisos": avisos}
+        escrever({"tipo": "recomendacoes", "recomendacoes": [r.model_dump() for r in novas]})
+        escrever({"tipo": "retomadas", "retomadas": [r.model_dump() for r in retomadas]})
+        return {
+            "recomendacoes": novas,
+            "retomadas": retomadas,
+            "motivo_sem_recomendacao": motivo,
+            "avisos": avisos,
+        }
 
     async def relatorio(estado: EstadoAgente) -> dict[str, Any]:
         escrever = get_stream_writer()
@@ -414,6 +454,7 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
                 motivo=estado.get("motivo_sem_recomendacao", "sem_prescricao"),
             )
         )
+        emitir(acompanhamento_markdown(estado.get("retomadas", [])))
         emitir(historico_markdown(hits) if estado.get("fracos") else "")
         texto_livre = "".join(narrativa)
         prescricoes_no_texto = citacoes_de_prescricao(texto_livre, hits)
@@ -442,6 +483,7 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         citadas = list(
             dict.fromkeys(
                 [r.fonte for r in recomendacoes]
+                + [r.fonte for r in estado.get("retomadas", [])]
                 + historico
                 + [c for c in citacoes_validas(texto_livre, hits) if c not in prescricoes_no_texto]
             )

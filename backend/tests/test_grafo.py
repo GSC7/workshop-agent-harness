@@ -550,3 +550,122 @@ async def test_llm_sem_proposta_com_prescricao_recuperada_declara_que_nenhuma_se
     _, final = await _rodar(deps)
 
     assert "nenhuma das prescrições recuperadas se aplica" in final["relatorio"]
+
+
+def _turno_sul(recomendacoes=None):
+    from agent.conversa import TurnoAnterior
+
+    return TurnoAnterior(
+        plano=Plano(kpis=["taxa_recompra"], eixo="regiao", valor="Sul"),
+        recomendacoes=recomendacoes or [],
+    )
+
+
+async def _rodar_turno(deps, pergunta, turno):
+    eventos, final = [], {}
+    async for modo, chunk in construir_grafo(deps).astream(
+        {"pergunta": pergunta, "turno_anterior": turno}, stream_mode=["custom", "values"]
+    ):
+        (eventos.append(chunk) if modo == "custom" else final.update(chunk))
+    return eventos, final
+
+
+async def test_acompanhamento_herda_kpi_do_turno_anterior():
+    deps = _deps(
+        Plano(eixo="regiao", valor="Nordeste"), linhas_kpi({"Sul": -0.3, "Nordeste": -0.25})
+    )
+
+    eventos, final = await _rodar_turno(deps, "e no Nordeste?", _turno_sul())
+
+    plano = next(e for e in eventos if e["tipo"] == "plano")["plano"]
+    assert (plano["kpis"], plano["valor"]) == (["taxa_recompra"], "Nordeste")
+    assert [f.dimensao for f in final["fracos"]] == ["Nordeste"]
+
+
+async def test_recomendacao_ja_entregue_na_conversa_nao_se_repete_vira_acompanhamento():
+    ja = [
+        {
+            "fonte": PRESC_SUL["fonte"],
+            "kpi": "taxa_recompra",
+            "dimensao": "Sul",
+            "acao": "Reativar frete grátis",
+        }
+    ]
+    deps = _deps_sul(
+        RecomendadorFake(recomendacoes=[_rec(PRESC_SUL["fonte"], acao="Frete grátis de novo")])
+    )
+
+    eventos, final = await _rodar_turno(deps, "Como melhorar a recompra no Sul?", _turno_sul(ja))
+
+    rel = final["relatorio"]
+    novas = rel.split("## Recomendações priorizadas")[1].split("##")[0]
+    assert "Frete grátis de novo" not in novas
+    assert "## Acompanhamento do que já foi recomendado" in rel and "Frete grátis de novo" in rel
+    assert next(e for e in eventos if e["tipo"] == "recomendacoes")["recomendacoes"] == []
+    assert len(next(e for e in eventos if e["tipo"] == "retomadas")["retomadas"]) == 1
+
+
+async def test_acao_que_o_llm_marca_como_ja_feita_em_relatorio_anterior_vai_para_acompanhamento():
+    rec = _rec(PRESC_SUL["fonte"]).model_copy(update={"retomada": True})
+    deps = _deps_sul(RecomendadorFake(recomendacoes=[rec]))
+
+    _, final = await _rodar(deps)
+
+    assert "## Acompanhamento do que já foi recomendado" in final["relatorio"]
+
+
+async def test_recomendador_recebe_os_relatorios_anteriores_e_o_ja_recomendado():
+    anterior = {
+        "document": "# Relatório anterior — já recomendou frete grátis",
+        "subtipo": "relatorio_anterior",
+        "fonte": "minio://corpus/prescricao/2026-05-relatorio-sul-recompra.md",
+    }
+    recomendador = RecomendadorFake(recomendacoes=[_rec(PRESC_SUL["fonte"])])
+    deps = _deps_sul(
+        recomendador, por_colecao={"diagnostico": [DIAG_SUL], "prescricao": [PRESC_SUL, anterior]}
+    )
+    ja = [
+        {
+            "fonte": "minio://x.md",
+            "kpi": "taxa_recompra",
+            "dimensao": "Sul",
+            "acao": "Resolver logística",
+        }
+    ]
+
+    await _rodar_turno(deps, "Como melhorar a recompra no Sul?", _turno_sul(ja))
+
+    contexto = json.loads(recomendador.contextos[0])
+    assert "já recomendou frete grátis" in contexto["relatorios_anteriores"][0]
+    assert contexto["ja_recomendado_nesta_conversa"][0]["acao"] == "Resolver logística"
+
+
+async def test_premissas_declaram_o_que_foi_herdado_e_nao_dizem_citado():
+    # Bloqueante da revisão: "e no Nordeste?" mostrava "mês citado" e "valor citado" herdados.
+    from agent.conversa import TurnoAnterior
+
+    turno = TurnoAnterior(
+        plano=Plano(kpis=["taxa_recompra"], eixo="regiao", valor="Sul", mes_citado=7)
+    )
+    deps = _deps(Plano(kpis=["faturamento"]), linhas_kpi({"Sul": -0.3}))
+
+    eventos, final = await _rodar_turno(deps, "e o faturamento?", turno)
+
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert premissas["origem_periodo"] == "herdado do turno anterior"
+    topo = final["relatorio"].split("## Diagn")[0]
+    assert "valor herdado do turno anterior: Sul" in topo and "valor citado" not in topo
+    assert "citado na pergunta" not in topo
+
+
+async def test_pergunta_fora_do_escopo_no_meio_da_conversa_nao_quebra_a_heranca():
+    from agent.conversa import TurnoAnterior
+
+    turno = TurnoAnterior(plano=Plano(kpis=["taxa_recompra"], eixo="regiao", valor="Sul"))
+    deps = _deps(Plano(fora_do_escopo=True), linhas_kpi({"Sul": -0.3}))
+
+    eventos, final = await _rodar_turno(deps, "Qual a capital da França?", turno)
+
+    assert "clarificar" in [e.get("nome") for e in eventos]
+    # o plano gravado continua com o recorte da conversa, p/ o turno seguinte herdar
+    assert (final["plano"].kpis, final["plano"].valor) == (["taxa_recompra"], "Sul")

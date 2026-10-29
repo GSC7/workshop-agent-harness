@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
@@ -17,6 +17,16 @@ from harness.modelo import RegistroRun
 from harness.repo import RepositorioRuns
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _Run:
+    """Identidade de UM run (por requisição): nada disso vive no serviço, que é compartilhado."""
+
+    id: UUID
+    conversa_id: UUID
+    pergunta: str
+    inicio: float
 
 
 def _sse(evento: dict[str, Any]) -> str:
@@ -40,14 +50,17 @@ class ServicoChat:
         self._bucket = bucket
         self._modelos = modelos
 
-    async def executar(self, pergunta: str) -> AsyncIterator[str]:
-        run_id, inicio = uuid4(), time.monotonic()
-        yield _sse({"tipo": "inicio", "run_id": str(run_id)})
+    async def executar(self, pergunta: str, conversa_id: UUID | None = None) -> AsyncIterator[str]:
+        run = _Run(uuid4(), conversa_id or uuid4(), pergunta, time.monotonic())
+        run_id = run.id
+        yield _sse({"tipo": "inicio", "run_id": str(run.id), "conversa_id": str(run.conversa_id)})
         final: dict[str, Any] = {}
         fontes: list[dict[str, Any]] = []
         try:
+            # Memória da conversa = os runs dela no harness (só os desta conversa).
+            turno = await self._repo.turno_anterior(run.conversa_id)
             async for item in self._grafo.astream(
-                {"pergunta": pergunta}, stream_mode=["custom", "values"]
+                {"pergunta": pergunta, "turno_anterior": turno}, stream_mode=["custom", "values"]
             ):
                 # Com vários stream_mode, cada item é (modo, payload); as stubs não expressam isso.
                 modo, chunk = cast(tuple[str, dict[str, Any]], item)
@@ -59,19 +72,17 @@ class ServicoChat:
                 yield _sse(chunk)
             relatorio = final.get("relatorio", "")
             uri = await salvar_relatorio(self._objetos, self._bucket, run_id, relatorio)
-            await self._repo.gravar(
-                self._registro(run_id, pergunta, inicio, final, fontes, relatorio, uri)
-            )
+            await self._repo.gravar(self._registro(run, final, fontes, relatorio, uri))
             yield _sse({"tipo": "fim", "run_id": str(run_id), "relatorio_uri": uri})
         except (asyncio.CancelledError, GeneratorExit):
             # Cliente caiu: o Starlette cancela pelo cancel scope do anyio (nível — reentrega o
             # cancelamento a cada await). Só um escopo blindado espera a gravação do run.
             with anyio.CancelScope(shield=True):
-                await self._gravar_falha(run_id, pergunta, inicio, final, "cancelado", "cancelado")
+                await self._gravar_falha(run, final, "cancelado", "cancelado")
             raise
         except Exception as exc:
             logger.exception("run %s falhou", run_id)
-            await self._gravar_falha(run_id, pergunta, inicio, final, type(exc).__name__)
+            await self._gravar_falha(run, final, type(exc).__name__)
             yield _sse(
                 {
                     "tipo": "erro",
@@ -82,9 +93,7 @@ class ServicoChat:
 
     def _registro(
         self,
-        run_id: UUID,
-        pergunta: str,
-        inicio: float,
+        run: _Run,
         final: dict[str, Any],
         fontes: list[dict[str, Any]],
         relatorio: str | None,
@@ -92,11 +101,12 @@ class ServicoChat:
         erro: str | None = None,
     ) -> RegistroRun:
         plano = final.get("plano")
+        premissas = final.get("premissas")
         return RegistroRun(
-            id=run_id,
-            pergunta=pergunta,
+            id=run.id,
+            pergunta=run.pergunta,
             status="erro" if erro else "ok",
-            duracao_ms=int((time.monotonic() - inicio) * 1000),
+            duracao_ms=int((time.monotonic() - run.inicio) * 1000),
             plano=plano.model_dump() if plano is not None else None,
             fracos=[asdict(f) for f in final.get("fracos", [])],
             sqls=list(final.get("sqls", [])),
@@ -105,21 +115,25 @@ class ServicoChat:
             relatorio_uri=uri,
             erro=erro,
             modelos=self._modelos,
+            conversa_id=run.conversa_id,
+            recomendacoes=[r.model_dump() for r in final.get("recomendacoes", [])]
+            + [{**r.model_dump(), "retomada": True} for r in final.get("retomadas", [])],
+            sazonais=[asdict(a) for a in final.get("sazonais", [])],
+            premissas=premissas,
+            avisos=list(final.get("avisos", [])),
         )
 
     async def _gravar_falha(
         self,
-        run_id: UUID,
-        pergunta: str,
-        inicio: float,
+        run: _Run,
         final: dict[str, Any],
         erro: str,
         status: Literal["erro", "cancelado"] = "erro",
     ) -> None:
         # O run com erro também é rastro auditável; falhar ao gravá-lo não pode mascarar a causa.
         try:
-            registro = self._registro(run_id, pergunta, inicio, final, [], None, None, erro=erro)
+            registro = self._registro(run, final, [], None, None, erro=erro)
             registro.status = status
             await self._repo.gravar(registro)
         except Exception:
-            logger.exception("não foi possível gravar o run %s com erro", run_id)
+            logger.exception("não foi possível gravar o run %s com erro", run.id)

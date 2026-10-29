@@ -162,11 +162,12 @@ class QdrantFake:
 class PlanejadorFake:
     plano: Any = None  # agent.state.Plano
     erro: Exception | None = None
+    sequencia: list[Any] = field(default_factory=list)  # um plano por turno, em ordem
 
     async def planejar(self, pergunta: str) -> Any:
         if self.erro is not None:
             raise self.erro
-        return self.plano
+        return self.sequencia.pop(0) if self.sequencia else self.plano
 
 
 @dataclass
@@ -197,6 +198,18 @@ class RepoRunsFake:
 
     async def gravar(self, run: Any) -> None:
         self.runs.append(run)
+
+    async def turno_anterior(self, conversa_id: Any) -> Any:
+        """Mesma regra do repositório real: só runs ok desta conversa."""
+        from agent.state import Plano, TurnoAnterior
+
+        da_conversa = [r for r in self.runs if r.conversa_id == conversa_id and r.status == "ok"]
+        if not da_conversa:
+            return None
+        return TurnoAnterior(
+            plano=Plano.model_validate(da_conversa[-1].plano),
+            recomendacoes=[rec for r in da_conversa for rec in r.recomendacoes],
+        )
 
 
 @dataclass

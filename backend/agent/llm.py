@@ -52,6 +52,10 @@ Regras:
 - Resultado positivo → repetir/adaptar a ação. Resultado nulo ou negativo → recomendar evitar.
 - Priorize por impacto provável no KPI no `periodo_alvo` (1 = mais importante). Até 5 itens.
 - Justificativa curta, com o que a fonte relata (números dela, se houver). Não invente.
+- `relatorios_anteriores` traz o que já foi recomendado antes; `ja_recomendado_nesta_conversa`, o
+que esta conversa já entregou. NÃO reapresente essas ações como novidade: se ainda forem
+necessárias, proponha-as com `retomada` = true (o sistema as lista como "cobrar execução e
+medir"). Prefira ações novas sustentadas por outras prescrições.
 - Sem prescrição adequada, devolva a lista vazia."""
 
 

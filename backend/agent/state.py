@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import operator
+from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
 
 from pydantic import BaseModel, Field
@@ -28,6 +29,8 @@ class Plano(BaseModel):
     )
     # Fora do schema do LLM: o mês-alvo vem do texto (periodo.mes_nomeado), não da inferência.
     mes_citado: SkipJsonSchema[int | None] = Field(default=None, ge=1, le=12)
+    # Campos que vieram do turno anterior (#7): as premissas dizem "herdado", não "citado".
+    herdados: SkipJsonSchema[list[str]] = Field(default_factory=list)
     fora_do_escopo: bool = Field(
         default=False,
         description="true só se a pergunta não for sobre vendas/KPIs comerciais.",
@@ -39,6 +42,15 @@ def _sem_repetir(atual: list[str], novos: list[str]) -> list[str]:
     return list(dict.fromkeys(atual + novos))
 
 
+@dataclass(frozen=True)
+class TurnoAnterior:
+    """O que a conversa já estabeleceu, lido do harness (rastro dos runs da conversa)."""
+
+    plano: Plano
+    # Recomendações já entregues na conversa: [{fonte, kpi, dimensao, acao, ...}].
+    recomendacoes: list[dict[str, Any]] = field(default_factory=list)
+
+
 class EstadoAgente(TypedDict, total=False):
     pergunta: str
     plano: Plano
@@ -47,7 +59,9 @@ class EstadoAgente(TypedDict, total=False):
     premissas: dict[str, Any]  # resolvidas em código e declaradas no topo do relatório
     sqls: Annotated[list[str], operator.add]  # SQL efetivamente executado (inspecionável)
     hits: list[Hit]
-    recomendacoes: list[Recomendacao]  # só as validadas (fonte de prescrição do run)
+    recomendacoes: list[Recomendacao]  # só as validadas (fonte de prescrição do run) e novas
+    retomadas: list[Recomendacao]  # validadas, mas já recomendadas antes: acompanhamento
+    turno_anterior: TurnoAnterior | None  # o que a conversa já estabeleceu (#7)
     motivo_sem_recomendacao: MotivoAusencia  # por que não há recomendação (declarado)
     avisos: Annotated[list[str], _sem_repetir]  # limitações do run, declaradas no relatório
     relatorio: str

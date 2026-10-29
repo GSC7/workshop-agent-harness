@@ -173,3 +173,19 @@ def test_citacao_de_prescricao_no_texto_livre_e_apontada():
     texto = f"Causa: atrasos [{ATRASOS}]; recomendo frete [{FRETE}]."
 
     assert citacoes_de_prescricao(texto, HITS) == [FRETE]
+
+
+def test_relatorio_anterior_nao_sustenta_recomendacao_nova():
+    anterior = "minio://corpus/prescricao/2026-05-relatorio-sul-recompra.md"
+    meta = {
+        "colecao": "prescricao",
+        "subtipo": "relatorio_anterior",
+        "para_kpi": "taxa_recompra",
+        "para_dimensao": "Sul",
+        "alvos": [["taxa_recompra", "Sul"]],
+    }
+    hits = [*HITS, Hit(texto="# Relatório anterior", score=0.9, fonte=anterior, metadados=meta)]
+
+    validas, descartadas = validar_recomendacoes([_rec(anterior)], hits)
+
+    assert validas == [] and "relatório anterior" in descartadas[0][1]
