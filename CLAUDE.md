@@ -12,8 +12,9 @@ Embeddings OpenAI `text-embedding-3-large` (3072d), só para embeddar a *query* 
 
 ## Comandos
 - subir tudo: `docker compose up -d`
-- testar: `uv run pytest -q`
-- validar (gate rápido): `uv run ruff check --fix backend && uv run mypy backend && uv run pytest -q` — ou `/validar`
+- testar: `uv run pytest -q` · frontend: `npm --prefix frontend test`
+- validar (gate rápido): `uv run ruff check --fix backend && uv run mypy backend && uv run pytest -q` +
+  `npm --prefix frontend run build && npm --prefix frontend test` — ou `/validar` (o hook de `Stop` roda os dois)
 - revisar (antes do commit/PR): subagente `revisor-codigo` — revisão *soft* contra as rules
 - medir entrega (time/stakeholders): `/scorecard` — execução medida contra a Definição de Pronto
 
