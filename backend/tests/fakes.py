@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy.exc import DBAPIError
 
 from app.services.health import Detalhe
 
@@ -50,3 +55,59 @@ class MinioFake:
     def make_bucket(self, bucket: str) -> None:
         self.criados.append(bucket)
         self.buckets.add(bucket)
+
+
+class _ErroPg(Exception):
+    """Imita o erro do driver asyncpg adaptado pelo SQLAlchemy (expõe `sqlstate`)."""
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(f"erro pg {sqlstate} senha=segredo")
+        self.sqlstate = sqlstate
+
+
+def erro_pg(sqlstate: str) -> DBAPIError:
+    return DBAPIError("SELECT segredo FROM pedidos", None, _ErroPg(sqlstate))
+
+
+@dataclass
+class _ResultadoFake:
+    colunas: list[str]
+    linhas: list[tuple[Any, ...]]
+
+    def keys(self) -> list[str]:
+        return self.colunas
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return self.linhas
+
+
+@dataclass
+class EngineFake:
+    """Registra, em ordem, o que seria enviado ao Postgres; a consulta falha se `erro` setado."""
+
+    colunas: list[str] = field(default_factory=list)
+    linhas: list[tuple[Any, ...]] = field(default_factory=list)
+    erro: Exception | None = None
+    executados: list[str] = field(default_factory=list)
+    conexoes: int = 0
+    transacao_aberta: bool = False
+
+    @asynccontextmanager
+    async def connect(self) -> AsyncIterator[EngineFake]:
+        self.conexoes += 1
+        yield self
+
+    @asynccontextmanager
+    async def begin(self) -> AsyncIterator[None]:
+        self.transacao_aberta = True
+        try:
+            yield
+        finally:
+            self.transacao_aberta = False
+
+    async def exec_driver_sql(self, sql: str) -> _ResultadoFake:
+        assert self.transacao_aberta, "instrução fora de transação"
+        self.executados.append(sql)
+        if not sql.startswith("SET") and self.erro is not None:
+            raise self.erro
+        return _ResultadoFake(self.colunas, self.linhas)

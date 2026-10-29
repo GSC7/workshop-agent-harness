@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await garantir_bucket(minio, settings.minio_bucket_relatorios)
 
+    app.state.engine_ro = engine  # única conexão do agente ao negocio (run_sql)
     app.state.verificadores = [
         VerificadorPostgres(engine),
         VerificadorQdrant(qdrant, settings.colecoes_qdrant),
