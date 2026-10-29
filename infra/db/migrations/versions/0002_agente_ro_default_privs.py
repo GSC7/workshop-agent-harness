@@ -1,6 +1,6 @@
 """agente_ro enxerga tabelas futuras do schema negocio
 
-Revision ID: 0002_agente_ro_default_privileges
+Revision ID: 0002_agente_ro_default_privs
 Revises: 0001_agente_ro
 Create Date: 2026-10-28
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0002_agente_ro_default_privileges"
+revision = "0002_agente_ro_default_privs"
 down_revision = "0001_agente_ro"
 branch_labels = None
 depends_on = None

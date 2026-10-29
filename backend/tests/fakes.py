@@ -150,3 +150,54 @@ class QdrantFake:
             raise self.erro
         pontos = [_PontoFake(0.9 - i / 10, p) for i, p in enumerate(self.payloads)]
         return _RespostaFake(pontos[: kwargs["limit"]])
+
+
+@dataclass
+class PlanejadorFake:
+    plano: Any = None  # agent.state.Plano
+    erro: Exception | None = None
+
+    async def planejar(self, pergunta: str) -> Any:
+        if self.erro is not None:
+            raise self.erro
+        return self.plano
+
+
+@dataclass
+class RedatorFake:
+    """Relatório em pedaços (simula streaming); guarda o contexto recebido."""
+
+    partes: list[str] = field(default_factory=lambda: ["## Relatório\n", "Recompra no Sul."])
+    contextos: list[str] = field(default_factory=list)
+
+    async def redigir(self, pergunta: str, contexto: str) -> AsyncIterator[str]:
+        self.contextos.append(contexto)
+        for p in self.partes:
+            yield p
+
+
+def linhas_kpi(dimensoes: dict[str, float], meses: int = 6, meta: float = 1.0) -> list[tuple]:
+    """Linhas (dimensao, mes, realizado, meta) com gap constante por dimensão."""
+    return [
+        (dim, f"2026-{m:02d}", meta * (1 + gap), meta)
+        for dim, gap in dimensoes.items()
+        for m in range(7 - meses, 7)
+    ]
+
+
+@dataclass
+class RepoRunsFake:
+    runs: list[Any] = field(default_factory=list)  # harness.modelo.RegistroRun
+
+    async def gravar(self, run: Any) -> None:
+        self.runs.append(run)
+
+
+@dataclass
+class ObjetosFake:
+    objetos: dict[str, bytes] = field(default_factory=dict)
+
+    def put_object(
+        self, bucket_name: str, object_name: str, data: Any, length: int, content_type: str
+    ) -> None:
+        self.objetos[f"{bucket_name}/{object_name}"] = data.read()

@@ -23,6 +23,7 @@ dependencies = [
     "langchain-anthropic>=1.0,<2.0",
     "langfuse>=4.9.0",
     "sqlglot>=30.25.0",
+    "langchain-openai>=1.0,<2.0",
 ]
 
 [dependency-groups]

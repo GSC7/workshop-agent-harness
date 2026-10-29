@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,6 +16,26 @@ class Settings(BaseSettings):
     # Conexão admin (RW) e senha do papel RO: só p/ host tools (migrations), nunca no runtime.
     database_url: SecretStr | None = None
     agente_ro_password: SecretStr | None = None
+    # Persistência de runs (schema harness) por papel próprio, só com INSERT/SELECT em runs.
+    database_url_harness: SecretStr | None = None
+    harness_rw_password: SecretStr | None = None
+
+    # LLMs dos nós, agnósticos de provedor. Forte redige o relatório; rápido extrai a intenção.
+    # Defaults = os do workshop original (upstream); o .env sobrescreve p/ trocar de modelo.
+    llm_provider: Literal["openai", "anthropic"] = "openai"
+    llm_model_forte: str | None = "gpt-4o"
+    llm_model_rapido: str | None = "gpt-4o-mini"
+    # Esforço de raciocínio opcional (OpenAI: reasoning_effort; Anthropic: effort).
+    llm_esforco_forte: Literal["low", "medium", "high"] | None = None
+    llm_esforco_rapido: Literal["low", "medium", "high"] | None = None
+    anthropic_api_key: SecretStr | None = None
+
+    # Perna quantitativa (ADR 0006): janela pelo último mês com dados.
+    kpi_meses_janela: int = 6
+    kpi_meses_recentes: int = 3
+    kpi_limiar_fraco: float = 0.10
+    kpi_max_fracos: int = 3
+    sql_timeout_kpi_ms: int = 15000
 
     qdrant_url: str = "http://localhost:6333"
     colecoes_qdrant: tuple[str, ...] = ("camada_semantica", "diagnostico", "prescricao")

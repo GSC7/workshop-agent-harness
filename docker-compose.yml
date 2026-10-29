@@ -62,6 +62,8 @@ services:
       # A API só fala com o schema negocio como agente_ro (somente-leitura). Sem conexão admin.
       DATABASE_URL: ""
       DATABASE_URL_RO: postgresql+asyncpg://agente_ro:${AGENTE_RO_PASSWORD:?defina AGENTE_RO_PASSWORD no .env}@postgres:5432/${POSTGRES_DB:-workshop}
+      # Runs do agente (schema harness) por papel próprio: só INSERT/SELECT em harness.runs.
+      DATABASE_URL_HARNESS: postgresql+asyncpg://harness_rw:${HARNESS_RW_PASSWORD:?defina HARNESS_RW_PASSWORD no .env}@postgres:5432/${POSTGRES_DB:-workshop}
       QDRANT_URL: http://qdrant:6333
       # Host interno do MinIO (o .env usa localhost:9000, válido só fora do compose).
       MINIO_ENDPOINT: minio:9000
