@@ -201,3 +201,13 @@ class ObjetosFake:
         self, bucket_name: str, object_name: str, data: Any, length: int, content_type: str
     ) -> None:
         self.objetos[f"{bucket_name}/{object_name}"] = data.read()
+
+
+def linhas_historico(dimensoes: dict[str, dict[int, float]], meta_2026: float = 1.0) -> list[tuple]:
+    """Jan-jun de cada ano com o realizado dado; meta = realizado nos anos anteriores."""
+    return [
+        (dim, f"{ano}-{m:02d}", valor, meta_2026 if ano == 2026 else valor)
+        for dim, anos in dimensoes.items()
+        for ano, valor in anos.items()
+        for m in range(1, 7)
+    ]

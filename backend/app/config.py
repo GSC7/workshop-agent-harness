@@ -30,10 +30,13 @@ class Settings(BaseSettings):
     llm_esforco_rapido: Literal["low", "medium", "high"] | None = None
     anthropic_api_key: SecretStr | None = None
 
-    # Perna quantitativa (ADR 0006): janela pelo último mês com dados.
-    kpi_meses_janela: int = 6
+    # Perna quantitativa (ADR 0006/0007): janela pelo último mês com dados; 27 meses cobrem os
+    # recentes + os mesmos meses dos 2 anos anteriores (sazonalidade).
+    kpi_meses_janela: int = 27
     kpi_meses_recentes: int = 3
+    kpi_meses_serie: int = 6
     kpi_limiar_fraco: float = 0.10
+    kpi_limiar_yoy: float = 0.10
     kpi_max_fracos: int = 3
     sql_timeout_kpi_ms: int = 15000
 

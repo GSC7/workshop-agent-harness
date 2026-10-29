@@ -44,7 +44,7 @@ def test_gap_medio_usa_so_os_meses_recentes_e_ordena_pior_primeiro():
         {"dimensao": "Norte", "mes": "2026-06", "realizado": 1.1, "meta": 1.0},
     ]
 
-    av = avaliar("taxa_recompra", "regiao", linhas, meses_recentes=2)
+    av = avaliar("taxa_recompra", "regiao", linhas, 2, 0.10, 0.10)
 
     assert [a.dimensao for a in av] == ["Sul", "Norte"]
     assert av[0].gap_medio == pytest.approx(-0.3)
@@ -55,4 +55,4 @@ def test_gap_medio_usa_so_os_meses_recentes_e_ordena_pior_primeiro():
 def test_meta_zero_nao_divide():
     linhas = [{"dimensao": "Sul", "mes": "2026-06", "realizado": 1.0, "meta": 0}]
 
-    assert avaliar("faturamento", "regiao", linhas, 3) == []
+    assert avaliar("faturamento", "regiao", linhas, 3, 0.10, 0.10) == []

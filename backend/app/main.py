@@ -69,7 +69,9 @@ def _servico_chat(
         config=ConfigAnalise(
             meses_janela=settings.kpi_meses_janela,
             meses_recentes=settings.kpi_meses_recentes,
+            meses_serie=settings.kpi_meses_serie,
             limiar_fraco=settings.kpi_limiar_fraco,
+            limiar_yoy=settings.kpi_limiar_yoy,
             max_fracos=settings.kpi_max_fracos,
             sql_teto_linhas=settings.sql_teto_linhas,
             sql_timeout_ms=settings.sql_timeout_kpi_ms,
