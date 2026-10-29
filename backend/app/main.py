@@ -12,7 +12,7 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from agent.grafo import ConfigAnalise, Dependencias, construir_grafo
-from agent.llm import PlanejadorLLM, RedatorLLM, criar_modelo
+from agent.llm import PlanejadorLLM, RecomendadorLLM, RedatorLLM, criar_modelo
 from agent.tools.search import EmbedderOpenAI
 from app.config import settings
 from app.routers import chat, health
@@ -65,6 +65,9 @@ def _servico_chat(
         ),
         redator=RedatorLLM(
             criar_modelo(provedor, forte, chave, 8000, 120, settings.llm_esforco_forte)
+        ),
+        recomendador=RecomendadorLLM(
+            criar_modelo(provedor, forte, chave, 4000, 120, settings.llm_esforco_forte)
         ),
         config=ConfigAnalise(
             meses_janela=settings.kpi_meses_janela,

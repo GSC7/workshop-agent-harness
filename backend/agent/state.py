@@ -6,6 +6,7 @@ from typing import Annotated, Any, TypedDict
 from pydantic import BaseModel, Field
 from pydantic.json_schema import SkipJsonSchema
 
+from agent.grounding import MotivoAusencia, Recomendacao
 from agent.kpis import Eixo, Kpi, KpiAvaliado
 from agent.tools.search import Hit
 
@@ -46,5 +47,7 @@ class EstadoAgente(TypedDict, total=False):
     premissas: dict[str, Any]  # resolvidas em código e declaradas no topo do relatório
     sqls: Annotated[list[str], operator.add]  # SQL efetivamente executado (inspecionável)
     hits: list[Hit]
+    recomendacoes: list[Recomendacao]  # só as validadas (fonte de prescrição do run)
+    motivo_sem_recomendacao: MotivoAusencia  # por que não há recomendação (declarado)
     avisos: Annotated[list[str], _sem_repetir]  # limitações do run, declaradas no relatório
     relatorio: str

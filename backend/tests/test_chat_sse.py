@@ -9,6 +9,7 @@ from fakes import (
     ObjetosFake,
     PlanejadorFake,
     QdrantFake,
+    RecomendadorFake,
     RedatorFake,
     RepoRunsFake,
     linhas_kpi,
@@ -35,6 +36,7 @@ def _servico(planejador=None):
         embedder=EmbedderFake(),
         planejador=planejador or PlanejadorFake(plano=Plano(kpis=["taxa_recompra"], eixo="regiao")),
         redator=RedatorFake(),
+        recomendador=RecomendadorFake(),
     )
     repo, objetos = RepoRunsFake(), ObjetosFake()
     servico = ServicoChat(
@@ -140,6 +142,7 @@ async def test_cancelamento_pelo_anyio_espera_a_gravacao_do_run():
             embedder=EmbedderFake(),
             planejador=PlanejadorFake(plano=Plano(kpis=["taxa_recompra"], eixo="regiao")),
             redator=RedatorLento(),
+            recomendador=RecomendadorFake(),
         )
     )
     escrevendo = anyio.Event()
