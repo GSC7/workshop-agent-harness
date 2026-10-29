@@ -58,7 +58,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -d backend ] || exit 0; uv run ruff check backend && uv run mypy backend && uv run pytest -q || exit 2"
+            "command": "[ -d backend ] || exit 0; uv run ruff check backend && uv run mypy backend && uv run pytest -q || exit 2; if [ -d frontend ]; then [ -d frontend/node_modules ] || npm --prefix frontend ci --no-audit --no-fund -s; npm --prefix frontend run -s build && npm --prefix frontend test -s || exit 2; fi"
           }
         ]
       }
