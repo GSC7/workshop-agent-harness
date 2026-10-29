@@ -109,11 +109,19 @@ def parece_do_dominio(pergunta: str) -> bool:
     return bool(_DOMINIO.search(normalizar(pergunta)))
 
 
+# Prefixos dos avisos de furo de grounding: o eval (ADR 0011) os importa — mudar aqui é seguro.
+AVISOS_GROUNDING = (
+    "citação sem fonte recuperada no texto",
+    "prescrição citada fora da seção de recomendações",
+)
+
 _CLARIFICACAO = (
     "Não consegui relacionar a pergunta aos indicadores comerciais que analiso. "
-    "Consigo explicar e propor melhorias para faturamento, ticket médio, taxa de recompra e "
-    "taxa de conversão — no total ou por região, canal ou categoria de produto. "
-    "Qual desses indicadores (e, se quiser, qual recorte) você quer melhorar?"
+    # Sem "propor melhorias": o judge leu isso como recomendação (pergunta fora do escopo não
+    # recebe recomendação nenhuma).
+    "Analiso faturamento, ticket médio, taxa de recompra e taxa de conversão — no total ou por "
+    "região, canal ou categoria de produto. "
+    "Qual desses indicadores (e, se quiser, qual recorte) você quer analisar?"
 )
 
 
@@ -458,10 +466,9 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         emitir(historico_markdown(hits) if estado.get("fracos") else "")
         texto_livre = "".join(narrativa)
         prescricoes_no_texto = citacoes_de_prescricao(texto_livre, hits)
-        avisos = [
-            f"citação sem fonte recuperada no texto: {c}"
-            for c in citacoes_sem_fonte(texto_livre, hits)
-        ] + [f"prescrição citada fora da seção de recomendações: {c}" for c in prescricoes_no_texto]
+        avisos = [f"{AVISOS_GROUNDING[0]}: {c}" for c in citacoes_sem_fonte(texto_livre, hits)] + [
+            f"{AVISOS_GROUNDING[1]}: {c}" for c in prescricoes_no_texto
+        ]
         for aviso in avisos:
             escrever({"tipo": "aviso", "mensagem": aviso})
         if avisos:

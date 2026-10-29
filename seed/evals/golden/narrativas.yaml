@@ -15,11 +15,21 @@
 # Campos auxiliares (não-contratuais, ajudam o runner e a leitura):
 #   id, narrativa, intencao (central|secundario|controle), dispara_enriquecimento,
 #   distratores (fontes plausíveis que NÃO devem ser citadas — precisão de recuperação).
+#   espera_clarificacao — pergunta fora do domínio: o agente deve pedir esclarecimento.
+#   criterios — régua fixa do judge (aprovada pelo usuário, ADR 0011): ele só marca cada um.
+#   pendente — falha conhecida com issue dona: aparece no relatório, fora do veredito
+#              até a issue entregar (decisão do usuário, ADR 0011).
 #
 # Os sql_esperado abaixo foram executados contra o banco semeado (negocio.*).
 # =============================================================================
 
 - id: n1-recompra-sul
+  criterios:
+    - "Aponta a taxa de recompra no Sul abaixo da meta"
+    - "Atribui a causa provável aos atrasos após a troca de transportadora"
+    - "Recomenda reativar o frete grátis no Sul ou cobrar a execução dessa ação"
+    - "Recomenda evitar o brinde genérico (resultado nulo)"
+    - "Não apresenta ação sem fonte rastreável"
   narrativa: N1
   intencao: central
   dispara_enriquecimento: true
@@ -54,9 +64,15 @@
     logístico; evitar o brinde genérico (resultado nulo em 2025).
 
 - id: n2-eletronicos-marketplace
+  criterios:
+    - "Aponta a queda do faturamento de Eletrônicos no marketplace"
+    - "Atribui a causa à mudança de comissão do marketplace (out/2025)"
+    - "Recomenda o bundle/kit que funcionou (nov/2025)"
+    - "Recomenda evitar o cupom agressivo (resultado negativo)"
   narrativa: N2
   intencao: secundario
   dispara_enriquecimento: true
+  pendente: "#9 — recorte temporal ('fim de 2025') e dimensão composta (categoria × canal)"
   pergunta: "Por que o faturamento de Eletrônicos no marketplace caiu no fim de 2025 e o que fazer?"
   sql_esperado: |
     SELECT extract(year FROM p.data_pedido)::int AS ano,
@@ -84,9 +100,15 @@
     repetir o cupom agressivo (resultado negativo em 2024, margem insustentável).
 
 - id: n3-conversao-site
+  criterios:
+    - "Aponta a conversão do site próprio abaixo do esperado"
+    - "Atribui a causa à fricção no checkout mobile / sazonalidade de inverno"
+    - "Recomenda o redesign do checkout que funcionou"
+    - "Recomenda evitar o pop-up de desconto (resultado nulo)"
   narrativa: N3
   intencao: secundario
   dispara_enriquecimento: true
+  pendente: "#9 — recorte sazonal do mês citado ('em julho'); hoje compara os meses recentes"
   pergunta: "Como aumentar a conversão do site próprio em julho?"
   sql_esperado: |
     SELECT to_char(d, 'YYYY-MM') AS mes,
@@ -111,6 +133,11 @@
     o pop-up de desconto (resultado nulo em 2023).
 
 - id: n4-beleza-nordeste
+  pendente: "#9 — dimensão composta (categoria × região) e KPIs saudáveis fora do contexto do redator"
+  criterios:
+    - "Reconhece Beleza no Nordeste como saudável / acima da meta"
+    - "Trata o recorte como oportunidade"
+    - "Não apresenta diagnóstico de problema nem prescrição corretiva"
   narrativa: N4
   intencao: controle
   dispara_enriquecimento: false
@@ -133,6 +160,11 @@
     roteamento do passo 4).
 
 - id: n5-loja-fisica
+  criterios:
+    - "Aponta o faturamento da loja física em queda"
+    - "Atribui a causa à queda estrutural de fluxo (migração para o online)"
+    - "Indica que o 'compre online, retire na loja' funcionou"
+    - "Indica que a reforma de vitrine não funcionou"
   narrativa: N5
   intencao: secundario
   dispara_enriquecimento: true
@@ -155,6 +187,11 @@
     evitar ações isoladas de ponto de venda como reforma de vitrine (resultado nulo).
 
 - id: n6-ticket-sazonal
+  pendente: "#9 — recorte do período citado ('fim do ano'); hoje compara os meses recentes"
+  criterios:
+    - "Reconhece a alta de novembro/dezembro como sazonal e esperada"
+    - "Não trata a alta como problema"
+    - "Não apresenta diagnóstico nem prescrição para a alta"
   narrativa: N6
   intencao: controle
   dispara_enriquecimento: false
@@ -170,3 +207,20 @@
     A alta de ticket médio em novembro/dezembro é SAZONAL e esperada (Black Friday /
     Natal), não uma anomalia. O agente deve reconhecê-la como padrão saudável e NÃO
     disparar diagnóstico/prescrição (controle sazonal de roteamento).
+
+- id: c1-fora-do-escopo
+  criterios:
+    - "Pede esclarecimento sobre a pergunta"
+    - "Diz quais indicadores comerciais analisa"
+    - "Não apresenta números nem recomendações"
+  narrativa: controle
+  intencao: controle
+  dispara_enriquecimento: false
+  espera_clarificacao: true
+  pergunta: "Qual a capital da França?"
+  sql_esperado: null
+  fontes_esperadas: []
+  distratores: []
+  recomendacao_esperada: >
+    Pergunta fora do domínio comercial: o agente pede esclarecimento, dizendo quais
+    indicadores analisa, sem rodar análise, sem números e sem recomendações.

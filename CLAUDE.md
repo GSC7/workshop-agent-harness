@@ -15,6 +15,7 @@ Embeddings OpenAI `text-embedding-3-large` (3072d), só para embeddar a *query* 
 - testar: `uv run pytest -q` · frontend: `npm --prefix frontend test`
 - validar (gate rápido): `uv run ruff check --fix backend && uv run mypy backend && uv run pytest -q` +
   `npm --prefix frontend run build && npm --prefix frontend test` — ou `/validar` (o hook de `Stop` roda os dois)
+- avaliar o agente (gate EDD, LLM real, pilha no ar): `PYTHONPATH=backend uv run python -m evals` — ADR 0011
 - revisar (antes do commit/PR): subagente `revisor-codigo` — revisão *soft* contra as rules
 - medir entrega (time/stakeholders): `/scorecard` — execução medida contra a Definição de Pronto
 
