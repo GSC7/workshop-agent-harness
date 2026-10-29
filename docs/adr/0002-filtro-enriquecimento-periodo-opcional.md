@@ -1,6 +1,8 @@
 # ADR 0002 — Enriquecimento filtra por kpi_alvo + dimensão; periodo_referencia é opcional
 
-- **Status:** aceito
+- **Status:** aceito; parcialmente substituído pelo **ADR 0005**. A obrigatoriedade de
+  `kpi_alvo` + dimensão passou a valer por coleção. O `periodo_referencia` opcional segue
+  valendo.
 - **Data:** 2026-06-27
 - **Issue:** #35 (tools run_sql + search)
 

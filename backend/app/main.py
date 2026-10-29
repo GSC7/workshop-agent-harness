@@ -6,9 +6,11 @@ from contextlib import asynccontextmanager
 import urllib3
 from fastapi import FastAPI
 from minio import Minio
+from openai import AsyncOpenAI
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from agent.tools.search import EmbedderOpenAI
 from app.config import settings
 from app.routers import health
 from app.services.stores import (
@@ -42,6 +44,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await garantir_bucket(minio, settings.minio_bucket_relatorios)
 
     app.state.engine_ro = engine  # única conexão do agente ao negocio (run_sql)
+    app.state.qdrant = qdrant
+    # Sem chave, a busca fica indisponível, mas o app (e o /health) sobe.
+    openai = (
+        AsyncOpenAI(api_key=settings.openai_api_key.get_secret_value())
+        if settings.openai_api_key is not None
+        else None
+    )
+    app.state.embedder = EmbedderOpenAI(openai, settings.embed_model) if openai else None
     app.state.verificadores = [
         VerificadorPostgres(engine),
         VerificadorQdrant(qdrant, settings.colecoes_qdrant),
@@ -50,6 +60,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if openai is not None:
+            await openai.close()
         await qdrant.close()
         await engine.dispose()
 

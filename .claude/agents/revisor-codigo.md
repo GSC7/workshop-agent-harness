@@ -28,7 +28,8 @@ você **não edita** — quem corrige é o autor da mudança.
      guardrails (allowlist + `LIMIT` + RO role + timeout).
    - Grafo **determinístico**: sem ReAct livre; LLM decide só dentro de nós; `search` é tool única
      parametrizada pela coleção.
-   - Enriquecimento Qdrant **sempre filtrado por `periodo_referencia`** (nunca `data_ingestao`).
+   - Enriquecimento Qdrant **sempre filtrado pela dimensão** (+ `kpi_alvo` na `prescricao`;
+     ADR 0005) e **nunca** por `data_ingestao`.
    - **Grounding:** toda recomendação prescritiva amarrada a uma `fonte`. Prescrição sem fonte = bug.
    - App é **runtime puro**: nenhuma ingestão/carga em `backend/`.
 4. **Cheque qualidade:** correção e edge cases, tipagem (sem `Any` solto), erros tratados,

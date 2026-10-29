@@ -26,6 +26,12 @@ class Settings(BaseSettings):
 
     health_timeout_s: float = 3.0
 
+    # Embedding da *query* em runtime (as coleções foram indexadas com este modelo).
+    openai_api_key: SecretStr | None = None
+    embed_model: str = "text-embedding-3-large"
+    embed_dim: int = 3072
+    search_limite: int = 5
+
     # Guardrails do run_sql (LIMIT garantido e statement_timeout no banco).
     sql_teto_linhas: int = 500
     sql_timeout_ms: int = 5000
