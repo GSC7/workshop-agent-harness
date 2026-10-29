@@ -86,8 +86,8 @@ services:
       start_period: 10s
 
   nginx:
-    # Única porta exposta: serve estáticos + proxy da api. Hoje é placeholder; vira
-    # multi-stage (build da SPA React+Vite) na fatia do frontend.
+    # Única porta exposta: serve a SPA (React + Vite, build multi-stage) e faz proxy da api
+    # na mesma origem — o frontend nunca fala com serviços internos.
     build:
       context: .
       dockerfile: infra/nginx/Dockerfile
