@@ -59,7 +59,9 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-workshop}:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}@postgres:5432/${POSTGRES_DB:-workshop}
+      # A API só fala com o schema negocio como agente_ro (somente-leitura). Sem conexão admin.
+      DATABASE_URL: ""
+      DATABASE_URL_RO: postgresql+asyncpg://agente_ro:${AGENTE_RO_PASSWORD:?defina AGENTE_RO_PASSWORD no .env}@postgres:5432/${POSTGRES_DB:-workshop}
       QDRANT_URL: http://qdrant:6333
       # Host interno do MinIO (o .env usa localhost:9000, válido só fora do compose).
       MINIO_ENDPOINT: minio:9000
@@ -67,13 +69,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      qdrant:
+        condition: service_started
       minio:
         condition: service_started
     # sem porta publicada: o acesso externo é só pelo nginx (prova o hop da issue #1)
     expose:
       - "8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live').read()"]
       interval: 10s
       timeout: 5s
       retries: 5
