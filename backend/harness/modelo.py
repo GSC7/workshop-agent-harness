@@ -22,3 +22,9 @@ class RegistroRun:
     relatorio_uri: str | None = None
     erro: str | None = None
     modelos: dict[str, str] = field(default_factory=dict)
+    conversa_id: UUID | None = None  # turnos da mesma conversa compartilham estado (#7)
+    # Recomendações entregues (novas e retomadas, com flag) e o porquê do diagnóstico.
+    recomendacoes: list[dict[str, Any]] = field(default_factory=list)
+    sazonais: list[dict[str, Any]] = field(default_factory=list)
+    premissas: dict[str, Any] | None = None
+    avisos: list[str] = field(default_factory=list)

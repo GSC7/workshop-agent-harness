@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -14,6 +15,8 @@ router = APIRouter()
 
 class PedidoChat(BaseModel):
     pergunta: str = Field(min_length=1, max_length=2000)
+    # Turnos com o mesmo id compartilham estado; ausente = conversa nova (id volta no "inicio").
+    conversa_id: UUID | None = None
 
     @field_validator("pergunta")
     @classmethod
@@ -31,7 +34,7 @@ async def chat(
     if servico is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "chat indisponível no momento")
     return StreamingResponse(
-        servico.executar(pedido.pergunta),
+        servico.executar(pedido.pergunta, pedido.conversa_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
