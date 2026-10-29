@@ -11,7 +11,8 @@ SSE", não "melhorar o chat". O que não é verificável não é critério de ac
 ## Uma issue só está PRONTA quando (todos):
 1. **Gate verde** — `/validar` (ruff + mypy + pytest) passa. Não se comita/fecha vermelho.
 2. **Rules respeitadas** — nenhum invariante violado (somente-leitura em `negocio`, grafo
-   determinístico, Qdrant filtrado por `periodo_referencia`, grounding com fonte, runtime puro).
+   determinístico, Qdrant filtrado pela dimensão (+ `kpi_alvo` na `prescricao`) e nunca por
+   `data_ingestao`, grounding com fonte, runtime puro).
 3. **Revisor aprovou** — `revisor-codigo` com veredito `aprovado` (ou `aprovado com ressalvas`);
    **nenhum bloqueante** em aberto.
 4. **Critérios de aceite atendidos** — cada um com evidência (teste que prova, ou demonstração).

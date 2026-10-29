@@ -111,3 +111,42 @@ class EngineFake:
         if not sql.startswith("SET") and self.erro is not None:
             raise self.erro
         return _ResultadoFake(self.colunas, self.linhas)
+
+
+@dataclass
+class EmbedderFake:
+    """Embedding determinístico e offline; registra o que foi embeddado."""
+
+    dimensao: int = 3072
+    textos: list[str] = field(default_factory=list)
+
+    async def embeddar(self, texto: str) -> list[float]:
+        self.textos.append(texto)
+        return [0.1] * self.dimensao
+
+
+@dataclass
+class _PontoFake:
+    score: float
+    payload: dict[str, Any]
+
+
+@dataclass
+class _RespostaFake:
+    points: list[_PontoFake]
+
+
+@dataclass
+class QdrantFake:
+    """Só `query_points`; guarda a última chamada para inspecionar filtro/coleção."""
+
+    payloads: list[dict[str, Any]] = field(default_factory=list)
+    chamadas: list[dict[str, Any]] = field(default_factory=list)
+    erro: Exception | None = None
+
+    async def query_points(self, **kwargs: Any) -> _RespostaFake:
+        self.chamadas.append(kwargs)
+        if self.erro is not None:
+            raise self.erro
+        pontos = [_PontoFake(0.9 - i / 10, p) for i, p in enumerate(self.payloads)]
+        return _RespostaFake(pontos[: kwargs["limit"]])

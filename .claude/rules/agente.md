@@ -24,8 +24,11 @@ LLM decide **só dentro de um nó**. Estas regras são invariantes — quebrar u
   LLM. **NUNCA** `INSERT/UPDATE/DELETE/DDL` no schema `negocio`.
 
 ## Enriquecimento Qdrant
-- **Sempre filtrado** por `kpi_alvo` + dimensão. `periodo_referencia` é **opcional** — só p/
-  recorte sazonal (as prescrições históricas vivem em vários períodos). Ver **ADR 0002**.
+- **Sempre filtrado** pela dimensão (AND exato de `regiao`/`produto`/`canal`), e na
+  `prescricao` também por `kpi_alvo`. O `diagnostico` não tem `kpi_alvo` no dado; a
+  `camada_semantica` é catálogo do schema (só `kpi_alvo` opcional). `periodo_referencia` é
+  **opcional**, só p/ recorte sazonal (as prescrições históricas vivem em vários períodos).
+  Ver **ADR 0002** e **ADR 0005**.
 - **NUNCA** filtre por `data_ingestao` — `periodo_referencia ≠ data_ingestao`. Confundir os dois
   é o erro clássico; o filtro é pelo período do *negócio*, não pela data em que o doc foi indexado.
 
