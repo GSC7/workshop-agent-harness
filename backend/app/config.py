@@ -26,5 +26,9 @@ class Settings(BaseSettings):
 
     health_timeout_s: float = 3.0
 
+    # Guardrails do run_sql (LIMIT garantido e statement_timeout no banco).
+    sql_teto_linhas: int = 500
+    sql_timeout_ms: int = 5000
+
 
 settings = Settings()
