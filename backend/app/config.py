@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     # Esforço de raciocínio opcional (OpenAI: reasoning_effort; Anthropic: effort).
     llm_esforco_forte: Literal["low", "medium", "high"] | None = None
     llm_esforco_rapido: Literal["low", "medium", "high"] | None = None
+    # Judge do gate de avaliação (ADR 0011); ausente = mesmo modelo forte do relatório.
+    llm_model_judge: str | None = None
     anthropic_api_key: SecretStr | None = None
 
     # Perna quantitativa (ADR 0006/0007): janela pelo último mês com dados; 27 meses cobrem os
