@@ -112,6 +112,10 @@ def para_markdown(rel: RelatorioEval) -> str:
             else "—"
         )
         judge = f"{r.nota_judge:.2f}" if r.nota_judge is not None else "—"
+        if r.avaliacao and r.avaliacao.votos:  # maioria (#27): as notas de cada voto
+            notas = "/".join(f"{v.nota:.2f}" for v in r.avaliacao.votos)
+            falhos = f", {r.avaliacao.votos_falhos} falho(s)" if r.avaliacao.votos_falhos else ""
+            judge += f" ({notas}{falhos})"
         linhas.append(
             f"| {r.caso.id} | {resultado} | {recall} | {judge} | {'; '.join(r.motivos)} |"
         )
