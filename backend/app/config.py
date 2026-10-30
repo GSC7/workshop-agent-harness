@@ -53,6 +53,12 @@ class Settings(BaseSettings):
 
     health_timeout_s: float = 3.0
 
+    # Observabilidade (#11, ADR 0014): sem as duas chaves, os runs seguem sem trace.
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: SecretStr | None = None
+    langfuse_host: str = "http://localhost:3000"
+    langfuse_timeout_s: int = 5
+
     # Embedding da *query* em runtime (as coleções foram indexadas com este modelo).
     openai_api_key: SecretStr | None = None
     embed_model: str = "text-embedding-3-large"
