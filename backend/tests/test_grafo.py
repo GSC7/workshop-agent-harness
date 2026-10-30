@@ -1005,3 +1005,39 @@ async def test_mes_alvo_junto_de_mes_passado_e_descartado():
     plano = next(e for e in eventos if e["tipo"] == "plano")["plano"]
     premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
     assert plano["mes_citado"] is None and "2025" in premissas["recorte"]
+
+
+@pytest.mark.parametrize(
+    ("pergunta", "filtro"),
+    [
+        ("Como foi a conversão do site no fim de 2023?", "IN (10, 11, 12)"),  # passado
+        ("Como aumentar a conversão do site em julho?", "IN (7)"),  # mês-alvo
+        ("O que fazer com a conversão do site?", None),  # sem recorte: janela contínua
+        ("A conversão do site sobe no fim do ano?", None),  # padrão precisa do resto do ano
+    ],
+)
+async def test_consulta_traz_so_os_meses_que_a_avaliacao_usa(pergunta, filtro):
+    # #29: categoria × 60 meses chegava a 480 de 500 linhas; o recorte só usa os seus meses.
+    deps = _deps(
+        Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio"), _linhas_julho_fraco()
+    )
+
+    eventos, _ = await _rodar(deps, pergunta=pergunta)
+
+    [sql] = [e["sql"].casefold() for e in eventos if e["tipo"] == "sql"]  # pós-guardrail
+    if filtro:
+        assert f"extract(month from p.data_pedido) {filtro.casefold()}" in sql
+    else:
+        assert "extract(month from p.data_pedido) in" not in sql
+
+
+async def test_dados_ate_vem_do_banco_mesmo_com_a_serie_filtrada():
+    linhas = [(*ln, "2026-06") for ln in _linhas_julho_fraco()]  # coluna dados_ate do SQL
+    deps = _deps(Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio"), linhas)
+    colunas = ["dimensao", "mes", "realizado", "meta", "dados_ate"]
+    deps.engine.colunas = colunas  # type: ignore[attr-defined]
+
+    eventos, _ = await _rodar(deps, pergunta="Como aumentar a conversão do site em julho?")
+
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert premissas["dados_ate"] == "2026-06"  # e não 2025-07, o último julho da série

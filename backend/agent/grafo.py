@@ -443,11 +443,15 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
                 f"sem meta por {plano.eixo} para o KPI pedido; analisado nos eixos com meta"
             )
         for kpi, eixo in executados if not composto else []:
-            r = await sql(sql_kpi(kpi, eixo, janela))
+            # Recorte de mês ou período passado só usa os seus meses; o padrão ("fim do ano")
+            # compara com o resto do ano e precisa de todos (#29).
+            meses_do_ano = recorte.meses if recorte and recorte.tipo != "padrao" else ()
+            r = await sql(sql_kpi(kpi, eixo, janela, meses_do_ano))
             sqls.append(r.sql)
             escrever({"tipo": "sql", "kpi": kpi, "eixo": eixo, "sql": r.sql})
-            meses_sql = [str(ln["mes"]) for ln in r.linhas]
-            if meses_sql:  # "dados até" vem do banco, não da série exibida (recorte)
+            # "dados até" vem do banco (coluna dados_ate), não da série exibida (recorte).
+            meses_sql = [str(ln.get("dados_ate") or ln["mes"]) for ln in r.linhas]
+            if meses_sql:
                 dados_ate = max([dados_ate or "", *meses_sql])
             if len(r.linhas) >= cfg.sql_teto_linhas:
                 avisos.append(
