@@ -37,6 +37,26 @@ dados:
   - "Anteriores" só recorta a prescrição em "novembros" ou "novembro anteriores"; um "ano
     anterior" solto não conta.
   - Período passado ("julho de 2025") não vira mês-alvo no plano, nem é herdado depois.
+  - **Mês em contexto de passado (#28):** cada menção de mês é classificada pelo contexto
+    (`periodo._mencoes`). Só a menção sem marca de passado vira mês-alvo.
+    - "julho **do ano passado**" é julho do ano anterior.
+    - "julho **passado**" é o último julho que já passou: em outubro de 2026, julho de **2026**.
+      A issue dizia "do ano anterior", mas em pt-BR "julho passado" dito em outubro é o deste
+      ano. Se o mês ainda não chegou ou é o corrente ("novembro passado" ou "outubro passado" em
+      outubro), é o do ano anterior. Sem dados do período, vale o aviso de recorte incompleto.
+    - "**desde** janeiro" não vira mês-alvo nem recorte: é um intervalo até hoje, que o recorte
+      não modela. Cai no default declarado nas premissas.
+    - "**marco**" sem acento só é mês com contexto de data antes ("em/de/desde/até/para marco")
+      ou depois ("marco de 2025"); "o marco do projeto" não é mês. "Março" com acento é sempre
+      mês.
+    - "comparado a julho passado, e agosto?" vira recorte passado (julho), e o agosto é
+      descartado como mês-alvo pela regra de período passado acima. Do mesmo modo, "comparando
+      julho com julho do ano passado" vira recorte passado (jul do ano anterior), não mês-alvo.
+    - "Anteriores" (plural ou "X anteriores") é da **menção**: o substantivo "marcos" não recorta
+      a prescrição de julho (achado da revisão).
+    - **Limites:** a presença de "março" acentuado vale para a frase toda (libera todo "marco");
+      "Marco foi bom?" e "nos marcos" caem no default (conservador); "julho do ano anterior" e
+      "julho deste ano" ainda viram mês-alvo futuro; "desde julho de 2025" cai no default.
 - **Avaliação no recorte** (`kpis.avaliar_recorte`):
   - **mês-alvo é risco se for historicamente fraco**: usa o gap médio dos anos da série, não um
     ano só;
