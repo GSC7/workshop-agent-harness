@@ -156,3 +156,57 @@ def test_nomes_do_minio_init_casam_com_a_api_e_a_politica():
     assert f"local/{bucket}" in comando and f"user add local {usuario} " in comando
     assert f"--user {usuario}" in comando
     assert _recursos() == {f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/*"}
+
+
+# ---- #30: Langfuse opcional (profile `observabilidade`) ----
+
+PROFILE = "observabilidade"
+SERVICOS = COMPOSE["services"]
+DO_LANGFUSE = {n for n in SERVICOS if n.startswith("langfuse-")}
+CHECAGEM = "langfuse-segredos"
+
+
+def _variaveis(servico: dict[str, Any]) -> set[str]:
+    texto = json.dumps(servico.get("environment", {})) + json.dumps(servico.get("command", ""))
+    return set(re.findall(r"\$\{(LANGFUSE_[A-Z_]+)", texto))
+
+
+def test_servicos_do_langfuse_so_sobem_com_o_profile():
+    assert DO_LANGFUSE >= {"langfuse-web", "langfuse-worker", CHECAGEM}
+    assert all(SERVICOS[n].get("profiles") == [PROFILE] for n in DO_LANGFUSE)
+    assert all("profiles" not in SERVICOS[n] for n in SERVICOS if n not in DO_LANGFUSE)
+
+
+def test_nada_do_profile_usa_variavel_obrigatoria_na_interpolacao():
+    # O compose interpola o arquivo inteiro, mesmo com o profile inativo (medido no compose 5.4):
+    # um ${VAR:?} aqui voltaria a derrubar todo comando do compose sem as LANGFUSE_*.
+    for nome in DO_LANGFUSE:
+        assert ":?" not in json.dumps(SERVICOS[nome]), nome
+
+
+def test_checagem_cobre_todo_segredo_que_o_langfuse_usa():
+    usadas = set().union(*(_variaveis(SERVICOS[n]) for n in DO_LANGFUSE - {CHECAGEM}))
+    usadas -= {"LANGFUSE_PORT"}  # tem default: não é segredo
+    comando = " ".join(SERVICOS[CHECAGEM]["command"])
+    laco = re.search(r"for v in ([A-Z_ ]+);", comando)
+
+    # Repassada ao container E conferida no laço: uma sem a outra não valida nada.
+    assert usadas and usadas <= _variaveis(SERVICOS[CHECAGEM])
+    assert laco is not None and usadas <= set(laco.group(1).split())
+
+
+def test_langfuse_nao_interpola_variavel_sem_default():
+    # Sem :- o compose avisa "variable is not set" em todo comando sem as LANGFUSE_*.
+    for nome in DO_LANGFUSE:
+        assert re.search(r"\$\{LANGFUSE_[A-Z_]+\}", json.dumps(SERVICOS[nome])) is None, nome
+
+
+def test_langfuse_so_sobe_depois_da_checagem_de_segredos():
+    for nome in DO_LANGFUSE - {CHECAGEM}:
+        depende = SERVICOS[nome].get("depends_on", {})
+        assert depende.get(CHECAGEM) == {"condition": "service_completed_successfully"}, nome
+
+
+def test_agente_nao_depende_do_langfuse():
+    for nome in set(SERVICOS) - DO_LANGFUSE:
+        assert DO_LANGFUSE.isdisjoint(SERVICOS[nome].get("depends_on", {})), nome

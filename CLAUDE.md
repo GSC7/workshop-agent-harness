@@ -8,11 +8,12 @@ Backend **FastAPI** (Python 3.13, `uv`) + **LangChain/LangGraph** (grafo determi
 livre). Frontend **React + Vite**. Stores: **Postgres** (schemas `negocio` + `harness`), **Qdrant**
 (3 coleções já populadas), **MinIO** (relatórios/gráficos). **nginx** = única porta exposta ao host.
 Embeddings OpenAI `text-embedding-3-large` (3072d), só para embeddar a *query* em runtime.
-**Langfuse** v4 para observabilidade: stack próprio no compose, UI em `:3000` pelo nginx, um trace
-por run (id em `harness.runs.trace_id`) — ADR 0014.
+**Langfuse** v4 para observabilidade, **opcional** (profile `observabilidade`): stack próprio no
+compose, UI em `:3000` pelo nginx, um trace por run (id em `harness.runs.trace_id`) — ADR 0014.
 
 ## Comandos
-- subir tudo: `docker compose up -d`
+- subir o agente: `docker compose up -d` · com observabilidade (Langfuse): `docker compose --profile observabilidade up -d`
+  (ou `COMPOSE_PROFILES=observabilidade` no `.env`) — ADR 0014
 - testar: `uv run pytest -q` · frontend: `npm --prefix frontend test`
 - validar (gate rápido): `uv run ruff check --fix backend && uv run mypy backend && uv run pytest -q` +
   `npm --prefix frontend run build && npm --prefix frontend test` — ou `/validar` (o hook de `Stop` roda os dois)

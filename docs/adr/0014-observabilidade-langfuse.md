@@ -24,13 +24,33 @@ projeto não depende dele.
   `http://localhost:<porta>` (`NEXTAUTH_URL`), e outro host ou IP quebra o callback. O MinIO do
   Langfuse usa só o endpoint interno.
 - **Segredos obrigatórios e com prefixo `LANGFUSE_`:** `POSTGRES_*` e `MINIO_*` já são do workshop
-  na interpolação do compose. Faltando um (ou vazio, como vem no `.env.example`), o compose recusa
-  subir em vez de usar um default inseguro. A interpolação vale para o arquivo inteiro: **sem as
-  `LANGFUSE_*`, nenhum comando do compose roda**, nem `up -d api` ou `ps`. Quem atualizar a branch
-  precisa preencher o `.env` antes. Dentro do compose, então, o rastreamento sempre fica ligado; o
-  "sem chaves = desligado" vale para a api rodando no host e para os testes. Um profile
-  `observabilidade` tornaria o Langfuse opcional e fica como alternativa se isso incomodar. O
-  projeto, as chaves da api e o usuário admin são criados no 1º boot (`LANGFUSE_INIT_*`).
+  na interpolação do compose. O projeto, as chaves da api e o usuário admin são criados no 1º boot
+  (`LANGFUSE_INIT_*`).
+- **Opcional, pelo profile `observabilidade` (#30).** Na 1ª versão os segredos eram `${VAR:?}`, e
+  como o compose interpola o arquivo inteiro, sem as `LANGFUSE_*` nenhum comando rodava (nem
+  `up -d api` ou `ps`).
+  - **Profile:** os serviços do Langfuse só sobem com `--profile observabilidade` (ou
+    `COMPOSE_PROFILES=observabilidade` no `.env`). `docker compose up -d` sobe só o agente.
+  - **Sem `:?` nos serviços do profile:** medido no compose 5.4, a interpolação roda **mesmo com o
+    profile inativo**, então um `:?` ali voltaria a quebrar tudo.
+  - **Quem recusa segredo faltando é o `langfuse-segredos`:** execução única no profile, que lista
+    só os **nomes** que faltam e confere a `ENCRYPTION_KEY` (64 hex). Os demais serviços do
+    Langfuse dependem dele (`service_completed_successfully`); com segredo faltando, nada sobe.
+  - **Sem o profile:** a porta 3000 do nginx responde 502; a api sem chaves roda sem trace
+    (`trace_id` nulo), e com chaves mas sem Langfuse no ar o export falha só em log.
+  - `tests/test_compose_env.py` garante profile, ausência de `:?` (e de `${VAR}` sem default), a
+    checagem cobrindo todo segredo usado (no `environment` e no laço) e o agente sem dependência
+    do Langfuse.
+  - **Ciclo de vida, medido no compose 5.4:**
+    - `up -d` sem o profile **mantém** no ar os containers do Langfuse que já estavam rodando
+      (não os trata como órfãos);
+    - `down` sem o profile **derruba também** os do Langfuse.
+    - Nunca use `-v` (CLAUDE.md: apaga os stores e os volumes do Langfuse).
+  - **Migração de quem vinha da #11:** o default mudou. Num boot do zero, `docker compose up -d`
+    deixa de subir o Langfuse, e os runs passam a gravar `trace_id` apontando para um trace que
+    não chega (se as chaves estiverem no `.env`). Para manter o comportamento da #11, descomente
+    `COMPOSE_PROFILES=observabilidade` no `.env`. O gate de avaliação (ADR 0011) não depende de
+    trace.
 - **O agente não conhece o Langfuse.** O `CallbackHandler` entra no `config` do `astream` e
   captura os nós e as chamadas de LLM. `run_sql` e `search` não são tools do LangChain (o nó as
   chama direto, grafo determinístico): `agent/rastro.como_tool` emite os callbacks de tool do
