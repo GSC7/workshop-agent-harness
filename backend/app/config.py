@@ -9,7 +9,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Config única do app; no container o compose injeta os hosts internos."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # Vazio = não definido: o compose repassa opcionais como ${VAR:-} sem apagar os defaults.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     # Conexão do agente ao schema `negocio`: papel somente-leitura `agente_ro`.
     database_url_ro: SecretStr | None = None
@@ -46,6 +47,10 @@ class Settings(BaseSettings):
     colecoes_qdrant: tuple[str, ...] = ("camada_semantica", "diagnostico", "prescricao")
 
     minio_endpoint: str = "localhost:9000"
+    # Usuário da api, restrito ao bucket de relatórios (#26); o container recebe só MINIO_API_*.
+    minio_api_user: str | None = None
+    minio_api_password: SecretStr | None = None
+    # Root: só para a api rodando no host sem MINIO_API_* (o seed usa o root por conta própria).
     minio_root_user: str | None = None
     minio_root_password: SecretStr | None = None
     minio_secure: bool = False
@@ -68,6 +73,15 @@ class Settings(BaseSettings):
     # Guardrails do run_sql (LIMIT garantido e statement_timeout no banco).
     sql_teto_linhas: int = 500
     sql_timeout_ms: int = 5000
+
+    def credenciais_minio(self) -> tuple[str, SecretStr] | None:
+        """Par coerente: o da api se completo, senão o root inteiro — nunca usuário de um com a
+        senha do outro (cada variável resolvida sozinha misturava os dois no host)."""
+        if self.minio_api_user and self.minio_api_password:
+            return self.minio_api_user, self.minio_api_password
+        if self.minio_root_user and self.minio_root_password:
+            return self.minio_root_user, self.minio_root_password
+        return None
 
 
 settings = Settings()
