@@ -72,7 +72,6 @@
   narrativa: N2
   intencao: secundario
   dispara_enriquecimento: true
-  pendente: "#9b — dimensão composta: analisa o marketplace inteiro e o texto atribuía o número a Eletrônicos"
   pergunta: "Por que o faturamento de Eletrônicos no marketplace caiu no fim de 2025 e o que fazer?"
   sql_esperado: |
     SELECT extract(year FROM p.data_pedido)::int AS ano,
@@ -132,7 +131,6 @@
     o pop-up de desconto (resultado nulo em 2023).
 
 - id: n4-beleza-nordeste
-  pendente: "#9b — dimensão composta: analisa Beleza no Brasil, não Beleza × Nordeste"
   criterios:
     - "Reconhece Beleza no Nordeste como saudável / acima da meta"
     - "Trata o recorte como oportunidade"

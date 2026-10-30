@@ -15,12 +15,9 @@ def test_golden_versionado_carrega_e_cobre_os_tipos_de_caso():
     assert all(c.fontes_esperadas for c in casos if c.dispara_enriquecimento)
 
 
-def test_falhas_conhecidas_apontam_a_issue_dona():
-    pendentes = [c for c in carregar_golden() if c.pendente]
-
-    # #9a resolveu N3 (mês-alvo) e N6 (fim do ano); N2/N4 dependem da dimensão composta (#9b).
-    assert {c.id for c in pendentes} == {"n2-eletronicos-marketplace", "n4-beleza-nordeste"}
-    assert all(c.pendente.startswith("#9b") for c in pendentes)
+def test_sem_falhas_conhecidas_depois_da_9():
+    # #9a resolveu N3/N6 (recorte temporal) e #9b N2/N4 (dimensão composta): todos contam.
+    assert [c.id for c in carregar_golden() if c.pendente] == []
 
 
 def test_todo_caso_tem_criterios_explicitos_para_o_judge():

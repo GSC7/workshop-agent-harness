@@ -56,6 +56,11 @@ def normalizar(texto: str) -> str:
     return re.sub(r"[\s_-]+", " ", sem_acento.casefold()).strip()
 
 
+def _chave_dimensao(dimensao: str) -> str:
+    """Dimensão composta escrita de outro jeito ('Eletrônicos x marketplace', '…/…') casa."""
+    return re.sub(r"\s*(?:/|\bx\b)\s*", " ", normalizar(dimensao)).strip()
+
+
 def _limpar_fonte(fonte: str) -> str:
     return fonte.strip().strip("[]`'\" ").strip()
 
@@ -99,7 +104,8 @@ def validar_recomendacoes(
             (
                 (k, d)
                 for k, d in alvos(hit)
-                if (normalizar(k), normalizar(d)) == (normalizar(rec.kpi), normalizar(rec.dimensao))
+                if (normalizar(k), _chave_dimensao(d))
+                == (normalizar(rec.kpi), _chave_dimensao(rec.dimensao))
             ),
             None,
         )

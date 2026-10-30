@@ -19,6 +19,7 @@ from fakes import (
 from agent.grafo import ConfigAnalise, Dependencias, construir_grafo, selecionar_fracos
 from agent.kpis import KpiAvaliado
 from agent.state import Plano
+from agent.tools.run_sql import ErroExecucaoSQL
 
 DOC_SUL = {
     "document": "Frete grátis no Sul elevou a recompra.",
@@ -800,3 +801,148 @@ async def test_recorte_sem_dados_completos_avisa():
     _, final = await _rodar(deps, pergunta="Como foi a conversão no fim de 2026?")
 
     assert any("sem dados completos" in a for a in final["avisos"])
+
+
+def _deps_composto(linhas_composto, plano, qdrant=None, redator=None):
+    from fakes import CATALOGO_SQL
+
+    deps = _deps(plano, linhas_kpi({"marketplace": -0.05}), qdrant=qdrant, redator=redator)
+    deps.engine.por_trecho = {  # type: ignore[attr-defined]
+        "FROM regioes UNION ALL": CATALOGO_SQL,
+        "pr.categoria_id = ": (["dimensao", "mes", "realizado"], linhas_composto),
+    }
+    return deps
+
+
+async def test_categoria_com_canal_vira_recorte_composto_e_enriquece_pelas_duas_dimensoes():
+    q4 = [
+        ("Eletrônicos × marketplace", f"{a}-{m}", v)
+        for a, v in ((2024, 100.0), (2025, 56.0))
+        for m in ("10", "11", "12")
+    ]
+    qdrant = QdrantFake(por_colecao={"diagnostico": [DIAG_SUL], "prescricao": [PRESC_SUL]})
+    deps = _deps_composto(
+        q4, Plano(kpis=["faturamento"], eixo="canal", valor="marketplace"), qdrant=qdrant
+    )
+
+    eventos, final = await _rodar(
+        deps, pergunta="Por que o faturamento de Eletrônicos no marketplace caiu no fim de 2025?"
+    )
+
+    [fraco] = final["fracos"]
+    assert (fraco.dimensao, fraco.classificacao, fraco.sem_meta) == (
+        "Eletrônicos × marketplace",
+        "queda_real",
+        True,
+    )
+    assert fraco.variacao_yoy == pytest.approx(-0.44)
+    diag, _ = (_filtro(c) for c in qdrant.chamadas)
+    assert (diag["produto"], diag["canal"]) == ("Eletrônicos", "marketplace")
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert (
+        premissas["eixos"] == ["categoria×canal"]
+        and premissas["valor"] == "Eletrônicos × marketplace"
+    )
+    sqls = [e["sql"] for e in eventos if e["tipo"] == "sql"]
+    assert len(sqls) == 1 and "pr.categoria_id = 1" in sqls[0]  # só o recorte pedido
+
+
+async def test_composto_saudavel_vai_ao_redator_sem_meta_e_com_o_ano_a_ano():
+    redator = RedatorFake()
+    s1 = [
+        ("Beleza × Nordeste", f"{a}-0{m}", v)
+        for a, v in ((2024, 100.0), (2025, 100.0), (2026, 128.0))
+        for m in (4, 5, 6)
+    ]
+    deps = _deps_composto(s1, Plano(eixo="categoria", valor="Beleza"), redator=redator)
+
+    _, final = await _rodar(
+        deps, pergunta="Devo investir mais em Beleza no Nordeste no próximo mês?"
+    )
+
+    assert final["fracos"] == []
+    [saudavel] = json.loads(redator.contextos[0])["kpis_saudaveis"]
+    assert saudavel["dimensao"] == "Beleza × Nordeste" and saudavel["desvio_vs_meta_pct"] is None
+    assert saudavel["variacao_vs_anos_anteriores_pct"] == 28.0
+    # Sem meta composta: o rótulo não pode dizer "dentro ou acima da meta" (o LLM repetia isso).
+    assert "meta própria" in saudavel["situacao"] and "acima da meta" not in saudavel["situacao"]
+
+
+async def test_composto_com_kpi_que_nao_tem_categoria_avisa_e_usa_o_eixo_simples():
+    deps = _deps_composto([], Plano(kpis=["taxa_recompra"], eixo="regiao", valor="Nordeste"))
+
+    _, final = await _rodar(deps, pergunta="Como vai a recompra de Beleza no Nordeste?")
+
+    assert any("composto" in a for a in final["avisos"])
+
+
+async def test_catalogo_concorrente_nao_duplica_e_composto_segue_detectado():
+    import asyncio
+
+    q4 = [
+        ("Eletrônicos × marketplace", f"{a}-{m}", v)
+        for a, v in ((2024, 100.0), (2025, 56.0))
+        for m in ("10", "11", "12")
+    ]
+    deps = _deps_composto(q4, Plano(kpis=["faturamento"], eixo="canal", valor="marketplace"))
+    deps.engine.atraso = 0.01  # type: ignore[attr-defined]
+    grafo = construir_grafo(deps)  # um grafo compartilhado entre requisições, como no app
+    pergunta = "Por que o faturamento de Eletrônicos no marketplace caiu no fim de 2025?"
+
+    async def rodar():
+        return await grafo.ainvoke({"pergunta": pergunta})
+
+    finais = await asyncio.gather(rodar(), rodar())
+    finais.append(await rodar())
+
+    assert all(
+        [f.dimensao for f in final["fracos"]] == ["Eletrônicos × marketplace"] for final in finais
+    )
+    catalogos = [s for s in deps.engine.executados if "FROM regioes UNION ALL" in s]  # type: ignore[attr-defined]
+    assert len(catalogos) == 2  # os 2 concorrentes consultaram; o 3º usou o cache
+
+
+async def test_catalogo_indisponivel_segue_sem_composto_e_tenta_de_novo_no_proximo_run():
+    from fakes import erro_pg
+
+    deps = _deps_composto([], Plano(kpis=["faturamento"], eixo="canal", valor="marketplace"))
+    grafo = construir_grafo(deps)
+    deps.engine.erro = erro_pg("57014")  # type: ignore[attr-defined]
+
+    with pytest.raises(ErroExecucaoSQL):  # o SQL do KPI também falha; importa o catálogo
+        await grafo.ainvoke({"pergunta": "Faturamento de Eletrônicos no marketplace?"})
+    deps.engine.erro = None  # type: ignore[attr-defined]
+    await grafo.ainvoke({"pergunta": "Faturamento de Eletrônicos no marketplace?"})
+
+    catalogos = [s for s in deps.engine.executados if "FROM regioes UNION ALL" in s]  # type: ignore[attr-defined]
+    assert len(catalogos) == 2  # a falha não ficou em cache
+
+
+async def test_acompanhamento_de_recorte_composto_continua_composto():
+    from agent.conversa import TurnoAnterior
+
+    q4 = [
+        ("Eletrônicos × marketplace", f"{a}-{m}", v)
+        for a, v in ((2023, 100.0), (2024, 56.0))
+        for m in ("10", "11", "12")
+    ]
+    deps = _deps_composto(q4, Plano())
+    turno = TurnoAnterior(
+        plano=Plano(kpis=["faturamento"], eixo="canal", valor="Eletrônicos × marketplace"),
+        recomendacoes=[],
+    )
+
+    eventos, final = await _rodar_turno(deps, "e no fim de 2024?", turno)
+
+    assert [f.dimensao for f in final["fracos"]] == ["Eletrônicos × marketplace"]
+    assert not any("não existe nos eixos" in a for a in final["avisos"])
+
+
+async def test_composto_avisa_kpi_que_ficou_de_fora():
+    deps = _deps_composto([], Plano(kpis=["faturamento", "ticket_medio"], eixo="canal"))
+
+    _, final = await _rodar(deps, pergunta="Faturamento e ticket de Eletrônicos no marketplace?")
+
+    assert any("não analisado: ticket_medio" in a for a in final["avisos"])
+    assert any("sem histórico comparável" in a for a in final["avisos"])
+    assert not any("não existe nos eixos" in a for a in final["avisos"])

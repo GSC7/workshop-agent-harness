@@ -16,6 +16,7 @@ from langgraph.graph.state import CompiledStateGraph
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from agent.composto import ItemCatalogo, detectar_composto
 from agent.conversa import chave, herdar, ja_recomendadas
 from agent.grounding import (
     MotivoAusencia,
@@ -29,10 +30,19 @@ from agent.grounding import (
     recomendacoes_markdown,
     validar_recomendacoes,
 )
-from agent.kpis import Classificacao, KpiAvaliado, avaliar, avaliar_recorte, pares, sql_kpi
+from agent.kpis import (
+    Classificacao,
+    KpiAvaliado,
+    avaliar,
+    avaliar_composto,
+    avaliar_recorte,
+    pares,
+    sql_kpi,
+    sql_kpi_composto,
+)
 from agent.periodo import Recorte, mes_nomeado, periodo_alvo, recorte_citado
 from agent.state import EstadoAgente, Plano
-from agent.tools.run_sql import executar_sql
+from agent.tools.run_sql import ErroExecucaoSQL, SQLRejeitado, executar_sql
 from agent.tools.search import Dimensao, Embedder, ErroBusca, Hit, buscar
 
 logger = logging.getLogger(__name__)
@@ -109,6 +119,13 @@ _DOMINIO = re.compile(
 def parece_do_dominio(pergunta: str) -> bool:
     return bool(_DOMINIO.search(normalizar(pergunta)))
 
+
+# Catálogo das dimensões vindo do próprio banco: é dele que saem os ids do recorte composto.
+_SQL_CATALOGO = (
+    "SELECT 'regiao' AS eixo, id, nome FROM regioes UNION ALL "
+    "SELECT 'canal', id, nome FROM canais UNION ALL "
+    "SELECT 'categoria', id, nome FROM categorias"
+)
 
 # Prefixos dos avisos de furo de grounding: o eval (ADR 0011) os importa — mudar aqui é seguro.
 AVISOS_GROUNDING = (
@@ -224,7 +241,9 @@ def _kpi_para_llm(a: KpiAvaliado, situacao: str) -> dict[str, Any]:
         "eixo": a.eixo,
         "dimensao": a.dimensao,
         "situacao": situacao,
-        "desvio_vs_meta_pct": round(a.gap_medio * 100, 1),
+        # Recorte composto não tem meta própria: só o ano a ano (#9b).
+        "desvio_vs_meta_pct": None if a.sem_meta else round(a.gap_medio * 100, 1),
+        **({"sem_meta_composta": True} if a.sem_meta else {}),
         "variacao_vs_anos_anteriores_pct": (
             round(a.variacao_yoy * 100, 1) if a.variacao_yoy is not None else None
         ),
@@ -260,7 +279,13 @@ def _contexto_relatorio(estado: EstadoAgente) -> str:
             ],
             # Saudáveis do recorte: o redator afirma "acima/dentro da meta" com número (#9, N4).
             "kpis_saudaveis": [
-                _kpi_para_llm(k, "dentro ou acima da meta") for k in estado.get("saudaveis", [])
+                _kpi_para_llm(
+                    k,
+                    "recorte composto sem meta própria: avaliado só pelo ano a ano (sem queda real)"
+                    if k.sem_meta
+                    else "dentro ou acima da meta",
+                )
+                for k in estado.get("saudaveis", [])
             ],
             "kpis_padrao_do_recorte": [
                 _kpi_para_llm(k, "padrão recorrente do período citado vs o resto do ano")
@@ -319,6 +344,31 @@ def _contexto_recomendacao(estado: EstadoAgente) -> str:
 
 def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any]:
     cfg = deps.config
+    cache_catalogo: list[ItemCatalogo] = []
+
+    async def catalogo() -> list[ItemCatalogo]:
+        """Nomes e ids de regiões/canais/categorias (uma vez por grafo); falha = vazio."""
+        if not cache_catalogo:
+            try:
+                r = await executar_sql(
+                    deps.engine, _SQL_CATALOGO, cfg.sql_teto_linhas, cfg.sql_timeout_ms
+                )
+            except (SQLRejeitado, ErroExecucaoSQL):
+                logger.warning("catálogo de dimensões indisponível; sem recorte composto")
+                return []
+            itens = list(
+                dict.fromkeys(
+                    ItemCatalogo(ln["eixo"], int(ln["id"]), str(ln["nome"]))
+                    for ln in r.linhas
+                    if {"eixo", "id", "nome"} <= ln.keys()
+                    and ln["eixo"] in ("regiao", "canal", "categoria")
+                )
+            )
+            # Runs concorrentes podem chegar aqui juntos: atribuição única, nunca duplicar
+            # (item duplicado = "duas categorias" = composto desligado em silêncio).
+            if not cache_catalogo:
+                cache_catalogo[:] = itens
+        return cache_catalogo
 
     async def planejar(estado: EstadoAgente) -> dict[str, Any]:
         get_stream_writer()({"tipo": "etapa", "nome": "planejar"})
@@ -360,11 +410,30 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         sqls: list[str] = []
         avisos: list[str] = []
         executados = pares(list(plano.kpis), plano.eixo)
-        if plano.eixo and plano.eixo not in {e for _, e in executados}:
+        # Categoria + canal/região citados: o recorte pedido é o composto (#9b, em código).
+        itens_catalogo = await catalogo()
+        composto = detectar_composto(estado["pergunta"], itens_catalogo)
+        if composto is None and plano.valor and "valor" in plano.herdados:
+            # Acompanhamento ("e em 2024?") de um recorte composto continua composto.
+            composto = detectar_composto(plano.valor, itens_catalogo)
+        if composto and plano.kpis and "faturamento" not in plano.kpis:
+            avisos.append(
+                "recorte composto (categoria × canal/região) só existe para faturamento; "
+                "analisado pelo eixo simples"
+            )
+            composto = None
+        if composto:
+            if fora := [k for k in plano.kpis if k != "faturamento"]:
+                avisos.append(
+                    f"recorte composto só existe para faturamento; não analisado: {', '.join(fora)}"
+                )
+            executados = [("faturamento", f"categoria×{composto.eixo_b}")]
+            plano = plano.model_copy(update={"valor": composto.rotulo, "kpis": ["faturamento"]})
+        if not composto and plano.eixo and plano.eixo not in {e for _, e in executados}:
             avisos.append(
                 f"sem meta por {plano.eixo} para o KPI pedido; analisado nos eixos com meta"
             )
-        for kpi, eixo in executados:
+        for kpi, eixo in executados if not composto else []:
             r = await executar_sql(
                 deps.engine,
                 sql_kpi(kpi, eixo, janela),
@@ -393,9 +462,34 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
                     cfg.meses_serie,
                 )
             )
+        if composto:
+            r = await executar_sql(
+                deps.engine,
+                sql_kpi_composto(composto, janela),
+                cfg.sql_teto_linhas,
+                cfg.sql_timeout_ms,
+            )
+            sqls.append(r.sql)
+            escrever({"tipo": "sql", "kpi": "faturamento", "eixo": executados[0][1], "sql": r.sql})
+            if meses_sql := [str(ln["mes"]) for ln in r.linhas]:
+                dados_ate = max([dados_ate or "", *meses_sql])
+            avaliados += avaliar_composto(
+                composto.eixo_b,
+                composto.filtro,
+                r.linhas,
+                recorte,
+                cfg.meses_recentes,
+                cfg.limiar_yoy,
+            )
         if recorte and not avaliados and executados:
             avisos.append("recorte citado sem dados completos no período; nada a comparar")
-        if plano.valor and not any(_norm(a.dimensao) == _norm(plano.valor) for a in avaliados):
+        elif composto and not avaliados:
+            avisos.append(f"'{composto.rotulo}' sem histórico comparável; nada a classificar")
+        if (
+            plano.valor
+            and not composto
+            and not any(_norm(a.dimensao) == _norm(plano.valor) for a in avaliados)
+        ):
             avisos.append(
                 f"'{plano.valor}' não existe nos eixos analisados; a análise cobre todos os valores"
             )
@@ -418,6 +512,7 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         premissas["dados_ate"] = dados_ate
         escrever({"tipo": "premissas", "premissas": premissas})
         return {
+            "plano": plano,
             "fracos": fracos,
             "sazonais": sazonais,
             "saudaveis": saudaveis,
@@ -453,7 +548,11 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         for fraco in estado.get("fracos", []):
             if fraco.eixo == "total":
                 continue  # sem dimensão não há filtro válido (ADR 0005)
-            dimensao = Dimensao(**{_CAMPO_DIMENSAO[fraco.eixo]: fraco.dimensao})
+            dimensao = (
+                Dimensao(**fraco.filtro)  # composto: as duas dimensões em AND (ADR 0005)
+                if fraco.filtro
+                else Dimensao(**{_CAMPO_DIMENSAO[fraco.eixo]: fraco.dimensao})
+            )
             consulta = f"{estado['pergunta']} ({fraco.kpi} em {fraco.dimensao})"
             recorte: Recorte | None = estado.get("recorte")
             # Período citado: o "porquê" é daquele período (periodo_referencia, nunca
