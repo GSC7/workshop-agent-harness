@@ -60,10 +60,9 @@ também contra o próprio histórico (−23,1% e −22,2%).
 - **Limitação, a tratar na #9:** a análise compara os meses **recentes**, não o mês-alvo citado.
   Na N3 ("conversão do site em julho"), o golden espera o recorte sazonal de julho (queda todo
   inverno) e as prescrições do site. Isso é a consulta sazonal comparativa do analista.
-- **Limitação do `mes_nomeado`:** qualquer mês nomeado vira alvo, inclusive em contexto de
-  passado ("desde janeiro", "comparado a julho passado"), e "marco" sem acento casa o
-  substantivo. O mês corrente citado vai para a próxima ocorrência ("fechar outubro" dito em
-  outubro dá o próximo outubro), o que a premissa declara. Refinar com a intenção temporal
-  na #9.
+- **Limitação do `mes_nomeado` (resolvida na #28, ADR 0012):** qualquer mês nomeado virava
+  alvo, inclusive em contexto de passado ("desde janeiro", "comparado a julho passado"), e
+  "marco" sem acento casava o substantivo. O mês corrente citado vai para a próxima ocorrência
+  ("fechar outubro" dito em outubro dá o próximo outubro), o que a premissa declara.
 - A recompra no Nordeste (−11% na meta, −4,6% no ano a ano) fica na fronteira: é classificada
   como sazonal. A calibração dos limiares vai para o golden e o judge da #10.

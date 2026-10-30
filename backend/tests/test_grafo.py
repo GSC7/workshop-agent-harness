@@ -946,3 +946,62 @@ async def test_composto_avisa_kpi_que_ficou_de_fora():
     assert any("não analisado: ticket_medio" in a for a in final["avisos"])
     assert any("sem histórico comparável" in a for a in final["avisos"])
     assert not any("não existe nos eixos" in a for a in final["avisos"])
+
+
+async def test_julho_do_ano_passado_analisa_o_passado_e_nao_vira_mes_alvo():
+    # #28: antes, "julho do ano passado" virava mês-alvo futuro (2027-07).
+    deps = _deps(
+        Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio"), _linhas_julho_fraco()
+    )
+
+    eventos, final = await _rodar(
+        deps, pergunta="Como foi a conversão do site em julho do ano passado?"
+    )
+
+    plano = next(e for e in eventos if e["tipo"] == "plano")["plano"]
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert plano["mes_citado"] is None and premissas["origem_periodo"] == "mês atual + 1"
+    assert "2025" in premissas["recorte"]
+    [avaliado] = final["sazonais"]  # julho de 2025 igual aos anteriores: sazonal, não queda real
+    # Série = julho nos anos de base, ancorada no ano pedido (ADR 0012): nada depois de 2025-07.
+    meses = {p["mes"] for p in avaliado.serie}
+    assert max(meses) == "2025-07" and all(m.endswith("-07") for m in meses)
+
+
+async def test_desde_janeiro_cai_no_default_declarado():
+    deps = _deps(Plano(kpis=["faturamento"]), linhas_kpi({"Sul": -0.3}))
+
+    eventos, _ = await _rodar(deps, pergunta="Como evoluiu o faturamento desde janeiro?")
+
+    plano = next(e for e in eventos if e["tipo"] == "plano")["plano"]
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert plano["mes_citado"] is None and premissas["recorte"] is None
+    assert premissas["origem_periodo"] == "mês atual + 1"
+
+
+async def test_julho_passado_sem_dados_do_periodo_avisa_recorte_incompleto():
+    # hoje = out/2026: "julho passado" é jul/2026, que a série (até 2025) não tem.
+    deps = _deps(
+        Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio"), _linhas_julho_fraco()
+    )
+
+    eventos, final = await _rodar(deps, pergunta="Como foi a conversão do site em julho passado?")
+
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert "2026" in premissas["recorte"]
+    assert any("sem dados completos" in a for a in final["avisos"])
+
+
+async def test_mes_alvo_junto_de_mes_passado_e_descartado():
+    # "comparado a julho passado, e agosto?": o recorte é o passado (julho); agosto não vira alvo.
+    deps = _deps(
+        Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio"), _linhas_julho_fraco()
+    )
+
+    eventos, _ = await _rodar(
+        deps, pergunta="Comparado a julho do ano passado, como fica a conversão em agosto?"
+    )
+
+    plano = next(e for e in eventos if e["tipo"] == "plano")["plano"]
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert plano["mes_citado"] is None and "2025" in premissas["recorte"]
