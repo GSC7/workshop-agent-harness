@@ -8,22 +8,25 @@ name: workshop
 # Langfuse v4 (observabilidade, #11 — ADR 0014): stack PRÓPRIO, isolado dos stores do agente
 # (postgres/minio do negocio não são tocados). Nenhum serviço publica porta: a UI sai pelo nginx.
 # Segredos com prefixo LANGFUSE_ (POSTGRES_*/MINIO_* já são do workshop na interpolação).
+# OPCIONAL (#30): só sobe com `--profile observabilidade` (ou COMPOSE_PROFILES no .env). Nada
+# aqui usa ${VAR:?}: o compose interpola o arquivo inteiro mesmo com o profile inativo, e isso
+# derrubaria todo comando sem as LANGFUSE_*. Quem recusa segredo faltando é o langfuse-segredos.
 x-langfuse-env: &langfuse-env
   # Login só por http://localhost:<porta>: outro host/IP quebra o callback do NextAuth.
   NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3000}
-  DATABASE_URL: postgresql://langfuse:${LANGFUSE_PG_PASSWORD:?defina LANGFUSE_PG_PASSWORD no .env}@langfuse-postgres:5432/langfuse
-  SALT: ${LANGFUSE_SALT:?defina LANGFUSE_SALT no .env}
-  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?defina LANGFUSE_ENCRYPTION_KEY no .env (openssl rand -hex 32)}
+  DATABASE_URL: postgresql://langfuse:${LANGFUSE_PG_PASSWORD:-}@langfuse-postgres:5432/langfuse
+  SALT: ${LANGFUSE_SALT:-}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-}
   TELEMETRY_ENABLED: "false"
   CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
   CLICKHOUSE_URL: http://langfuse-clickhouse:8123
   CLICKHOUSE_USER: clickhouse
-  CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?defina LANGFUSE_CLICKHOUSE_PASSWORD no .env}
+  CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-}
   CLICKHOUSE_CLUSTER_ENABLED: "false"
   LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
   LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
   LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: langfuse
-  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?defina LANGFUSE_MINIO_PASSWORD no .env}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:-}
   LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
   LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
   LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
@@ -31,15 +34,17 @@ x-langfuse-env: &langfuse-env
   LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
   LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
   LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: langfuse
-  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD}
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:-}
   LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
   LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
   LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
   REDIS_HOST: langfuse-redis
   REDIS_PORT: "6379"
-  REDIS_AUTH: ${LANGFUSE_REDIS_AUTH:?defina LANGFUSE_REDIS_AUTH no .env}
+  REDIS_AUTH: ${LANGFUSE_REDIS_AUTH:-}
 
 x-langfuse-depends: &langfuse-depends
+  langfuse-segredos:
+    condition: service_completed_successfully
   langfuse-postgres:
     condition: service_healthy
   langfuse-minio:
@@ -210,7 +215,46 @@ services:
       api:
         condition: service_healthy
 
+  langfuse-segredos:
+    # Execução única (#30): recusa subir o Langfuse com segredo faltando — sem ${VAR:?}, que
+    # quebraria o compose inteiro mesmo sem o profile. Só lista NOMES, nunca valores.
+    profiles: ["observabilidade"]
+    image: postgres:17   # só pelo sh (imagem já usada no compose; nada novo a baixar)
+    container_name: workshop-langfuse-segredos
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        faltando=""
+        for v in LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_INIT_USER_EMAIL LANGFUSE_INIT_USER_PASSWORD LANGFUSE_NEXTAUTH_SECRET LANGFUSE_SALT LANGFUSE_ENCRYPTION_KEY LANGFUSE_PG_PASSWORD LANGFUSE_CLICKHOUSE_PASSWORD LANGFUSE_REDIS_AUTH LANGFUSE_MINIO_PASSWORD; do
+          eval "valor=\$$$$v"
+          [ -n "$$valor" ] || faltando="$$faltando $$v"
+        done
+        if [ -n "$$faltando" ]; then
+          echo "defina no .env (openssl rand -hex 32):$$faltando"
+          exit 1
+        fi
+        case "$$LANGFUSE_ENCRYPTION_KEY" in *[!0-9a-fA-F]*) hex=0 ;; *) hex=1 ;; esac
+        if [ "$${#LANGFUSE_ENCRYPTION_KEY}" -ne 64 ] || [ "$$hex" = 0 ]; then
+          echo "LANGFUSE_ENCRYPTION_KEY precisa de 64 caracteres hex (openssl rand -hex 32)"
+          exit 1
+        fi
+        echo "segredos do Langfuse ok"
+    environment:
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-}
+      LANGFUSE_NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-}
+      LANGFUSE_SALT: ${LANGFUSE_SALT:-}
+      LANGFUSE_ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-}
+      LANGFUSE_PG_PASSWORD: ${LANGFUSE_PG_PASSWORD:-}
+      LANGFUSE_CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-}
+      LANGFUSE_REDIS_AUTH: ${LANGFUSE_REDIS_AUTH:-}
+      LANGFUSE_MINIO_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:-}
+
   langfuse-web:
+    profiles: ["observabilidade"]
     image: docker.langfuse.com/langfuse/langfuse:4
     container_name: workshop-langfuse-web
     restart: unless-stopped
@@ -219,20 +263,21 @@ services:
       - "3000"
     environment:
       <<: *langfuse-env
-      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?defina LANGFUSE_NEXTAUTH_SECRET no .env}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-}
       LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://langfuse-minio:9000
       # Init headless no 1º boot: org, projeto (com as chaves que a api usa) e usuário admin.
       LANGFUSE_INIT_ORG_ID: workshop
       LANGFUSE_INIT_ORG_NAME: Workshop
       LANGFUSE_INIT_PROJECT_ID: agente-analitico
       LANGFUSE_INIT_PROJECT_NAME: Agente Analítico de Vendas
-      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?defina LANGFUSE_PUBLIC_KEY no .env}
-      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?defina LANGFUSE_SECRET_KEY no .env}
-      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:?defina LANGFUSE_INIT_USER_EMAIL no .env}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-}
       LANGFUSE_INIT_USER_NAME: admin
-      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?defina LANGFUSE_INIT_USER_PASSWORD no .env}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-}
 
   langfuse-worker:
+    profiles: ["observabilidade"]
     image: docker.langfuse.com/langfuse/langfuse-worker:4
     container_name: workshop-langfuse-worker
     restart: unless-stopped
@@ -243,13 +288,17 @@ services:
       <<: *langfuse-env
 
   langfuse-postgres:
+    profiles: ["observabilidade"]
+    depends_on:
+      langfuse-segredos:
+        condition: service_completed_successfully
     image: postgres:17
     container_name: workshop-langfuse-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: langfuse
       POSTGRES_USER: langfuse
-      POSTGRES_PASSWORD: ${LANGFUSE_PG_PASSWORD}
+      POSTGRES_PASSWORD: ${LANGFUSE_PG_PASSWORD:-}
       TZ: UTC
       PGTZ: UTC
     volumes:
@@ -261,6 +310,10 @@ services:
       retries: 10
 
   langfuse-clickhouse:
+    profiles: ["observabilidade"]
+    depends_on:
+      langfuse-segredos:
+        condition: service_completed_successfully
     image: clickhouse/clickhouse-server:25.12
     container_name: workshop-langfuse-clickhouse
     restart: unless-stopped
@@ -268,7 +321,7 @@ services:
     environment:
       CLICKHOUSE_DB: default
       CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-}
     volumes:
       - langfuse_clickhouse_data:/var/lib/clickhouse
       - langfuse_clickhouse_logs:/var/log/clickhouse-server
@@ -280,6 +333,10 @@ services:
       start_period: 1s
 
   langfuse-minio:
+    profiles: ["observabilidade"]
+    depends_on:
+      langfuse-segredos:
+        condition: service_completed_successfully
     image: cgr.dev/chainguard/minio:latest
     container_name: workshop-langfuse-minio
     restart: unless-stopped
@@ -288,7 +345,7 @@ services:
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
     environment:
       MINIO_ROOT_USER: langfuse
-      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD}
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:-}
     volumes:
       - langfuse_minio_data:/data
     healthcheck:
@@ -299,11 +356,15 @@ services:
       start_period: 1s
 
   langfuse-redis:
+    profiles: ["observabilidade"]
+    depends_on:
+      langfuse-segredos:
+        condition: service_completed_successfully
     image: redis:7
     container_name: workshop-langfuse-redis
     restart: unless-stopped
     command: >
-      --requirepass ${LANGFUSE_REDIS_AUTH}
+      --requirepass ${LANGFUSE_REDIS_AUTH:-}
       --maxmemory-policy noeviction
     volumes:
       - langfuse_redis_data:/data
