@@ -7,9 +7,11 @@ recorte por valor (ex.: "Sul") é aplicado depois, sobre o resultado.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal, get_args
+
+from agent.periodo import Recorte
 
 Kpi = Literal["faturamento", "ticket_medio", "taxa_recompra", "taxa_conversao"]
 Eixo = Literal["total", "regiao", "canal", "categoria"]
@@ -106,7 +108,9 @@ def sql_kpi(kpi: str, eixo: str, meses: int) -> str:
     )
 
 
-Classificacao = Literal["queda_real", "sazonal", "saudavel"]
+# risco_sazonal: mês-alvo citado historicamente abaixo da meta (#9, aprovado pelo usuário);
+# padrao: recorte recorrente descrito (ex.: fim do ano vs resto do ano), sem prescrição.
+Classificacao = Literal["queda_real", "sazonal", "saudavel", "risco_sazonal", "padrao"]
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,9 @@ class KpiAvaliado:
     variacao_yoy: float | None
     classificacao: Classificacao
     serie: list[dict[str, Any]]  # [{mes, realizado, meta}] recentes, p/ o relatório e a UI
+    ano_referencia: int | None = None  # ano do recorte avaliado (#9)
+    # Recorte vs o resto do mesmo ano, por ano (ex.: fim do ano +11% em 2024).
+    vs_resto_do_ano: dict[int, float] = field(default_factory=dict)
 
     @property
     def abaixo_da_meta(self) -> bool:
@@ -208,6 +215,99 @@ def avaliar(
                     }
                     for m in meses[-meses_serie:]
                 ],
+            )
+        )
+    return sorted(avaliados, key=lambda a: a.gap_medio)
+
+
+def avaliar_recorte(
+    kpi: str,
+    eixo: str,
+    linhas: list[dict[str, Any]],
+    recorte: Recorte,
+    limiar_meta: float,
+    limiar_yoy: float,
+) -> list[KpiAvaliado]:
+    """Avalia o período CITADO (não os meses recentes): ano de referência = o do recorte, ou o
+    último ano com o recorte completo; compara com o mesmo período 1-2 anos antes (#9)."""
+    por_dim: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    for linha in linhas:
+        por_dim[str(linha["dimensao"])][str(linha["mes"])] = linha
+    avaliados: list[KpiAvaliado] = []
+    for dim, por_mes in por_dim.items():
+
+        def mes(ano: int, m: int) -> str:
+            return f"{ano:04d}-{m:02d}"
+
+        def completo(ano: int) -> bool:
+            return all(
+                mes(ano, m) in por_mes and _realizado(por_mes[mes(ano, m)]) is not None
+                for m in recorte.meses
+            )
+
+        anos = sorted({int(k[:4]) for k in por_mes if completo(int(k[:4]))})
+        if not anos:
+            continue
+        ref = recorte.ano if recorte.ano in anos else (None if recorte.ano else anos[-1])
+        if ref is None:
+            continue
+        # Série ancorada no ano pedido (nunca anos depois dele).
+        anos_serie = [a for a in anos if a <= ref][-3:]
+        # Mês-alvo é risco se for HISTORICAMENTE fraco: gap médio dos anos da série; nos demais,
+        # o gap é o do ano de referência.
+        anos_gap = anos_serie if recorte.tipo == "mes_alvo" else [ref]
+        alvo = [mes(a, m) for a in anos_gap for m in recorte.meses]
+        com_meta = [k for k in alvo if _num(por_mes[k]["meta"]) > 0]
+        if not com_meta:
+            continue  # sem meta não há "dentro da meta": pular, não declarar saudável
+        gap = sum(
+            (_realizado(por_mes[k]) or 0.0) / _num(por_mes[k]["meta"]) - 1 for k in com_meta
+        ) / len(com_meta)
+
+        def media(ano: int) -> float:
+            return sum(_realizado(por_mes[mes(ano, m)]) or 0.0 for m in recorte.meses) / len(
+                recorte.meses
+            )
+
+        base = [media(a) for a in (ref - 1, ref - 2) if a in anos]
+        yoy = media(ref) / (sum(base) / len(base)) - 1 if base and sum(base) > 0 else None
+        vs_resto: dict[int, float] = {}
+        for a in anos:
+            resto = [
+                r
+                for m in range(1, 13)
+                if m not in recorte.meses
+                and mes(a, m) in por_mes
+                and (r := _realizado(por_mes[mes(a, m)])) is not None
+            ]
+            if resto and sum(resto) > 0:
+                vs_resto[a] = media(a) / (sum(resto) / len(resto)) - 1
+        if recorte.tipo == "padrao":
+            classe: Classificacao = "padrao"
+        elif recorte.tipo == "mes_alvo":
+            classe = "risco_sazonal" if gap < -limiar_meta else "saudavel"
+        else:
+            classe = classificar(gap, yoy, limiar_meta, limiar_yoy)
+        serie = [
+            {
+                "mes": mes(a, m),
+                "realizado": _realizado(por_mes[mes(a, m)]),
+                "meta": _num(por_mes[mes(a, m)]["meta"]),
+            }
+            for a in anos_serie
+            for m in recorte.meses
+        ]
+        avaliados.append(
+            KpiAvaliado(
+                kpi=kpi,
+                eixo=eixo,
+                dimensao=dim,
+                gap_medio=gap,
+                variacao_yoy=yoy,
+                classificacao=classe,
+                serie=serie,
+                ano_referencia=ref,
+                vs_resto_do_ano=vs_resto,
             )
         )
     return sorted(avaliados, key=lambda a: a.gap_medio)

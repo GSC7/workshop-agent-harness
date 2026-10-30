@@ -29,8 +29,8 @@ from agent.grounding import (
     recomendacoes_markdown,
     validar_recomendacoes,
 )
-from agent.kpis import Classificacao, KpiAvaliado, avaliar, pares, sql_kpi
-from agent.periodo import mes_nomeado, periodo_alvo
+from agent.kpis import Classificacao, KpiAvaliado, avaliar, avaliar_recorte, pares, sql_kpi
+from agent.periodo import Recorte, mes_nomeado, periodo_alvo, recorte_citado
 from agent.state import EstadoAgente, Plano
 from agent.tools.run_sql import executar_sql
 from agent.tools.search import Dimensao, Embedder, ErroBusca, Hit, buscar
@@ -56,6 +56,7 @@ class Redator(Protocol):
 @dataclass(frozen=True)
 class ConfigAnalise:
     meses_janela: int = 27  # recentes + os mesmos meses dos 2 anos anteriores (sazonalidade)
+    meses_janela_recorte: int = 39  # período citado: 3 anos de ocorrências + o ano corrente
     meses_recentes: int = 3  # base do gap médio e da comparação com anos anteriores
     meses_serie: int = 6  # série exibida no relatório/UI
     limiar_fraco: float = 0.10  # gap vs meta pior que -10% = abaixo da meta
@@ -131,6 +132,7 @@ def _premissas(
     avaliados: list[KpiAvaliado],
     hoje: date,
     cfg: ConfigAnalise,
+    recorte: Recorte | None = None,
 ) -> dict[str, Any]:
     """Defaults resolvidos em código e declarados — o escopo é o que de fato rodou."""
     meses = sorted({p["mes"] for a in avaliados for p in a.serie})
@@ -149,13 +151,49 @@ def _premissas(
         "valor": plano.valor,
         "herdado": list(plano.herdados),
         "dados_ate": meses[-1] if meses else None,
-        "janela_recente": f"{recentes[0]} a {recentes[-1]}" if recentes else None,
-        "comparacao_sazonal": "mesmos meses dos 2 anos anteriores",
+        "janela_recente": f"{recentes[0]} a {recentes[-1]}" if recentes and not recorte else None,
+        "recorte": _descrever_recorte(recorte, avaliados) if recorte else None,
+        "comparacao_sazonal": (
+            "período citado vs o resto do mesmo ano"
+            if recorte and recorte.tipo == "padrao"
+            else "mês-alvo contra a meta nos anos anteriores"
+            if recorte and recorte.tipo == "mes_alvo"
+            else "comparação com os mesmos meses dos 2 anos anteriores"
+        ),
         "criterio_queda_real": (
             f"desvio vs meta pior que -{cfg.limiar_fraco:.0%} e queda pior que "
             f"-{cfg.limiar_yoy:.0%} vs os mesmos meses dos anos anteriores"
         ),
     }
+
+
+_NOME_MES = (
+    "janeiro",
+    "fevereiro",
+    "março",
+    "abril",
+    "maio",
+    "junho",
+    "julho",
+    "agosto",
+    "setembro",
+    "outubro",
+    "novembro",
+    "dezembro",
+)
+
+
+def _descrever_recorte(recorte: Recorte, avaliados: list[KpiAvaliado]) -> str:
+    nomes = (
+        "outubro a dezembro" if recorte.meses == (10, 11, 12) else _NOME_MES[recorte.meses[0] - 1]
+    )
+    meses = sorted({p["mes"] for a in avaliados for p in a.serie})
+    analisados = f" (analisado: {', '.join(meses)})" if meses else ""
+    if recorte.tipo == "passado":
+        return f"{nomes} de {recorte.ano} vs o mesmo período do ano anterior{analisados}"
+    if recorte.tipo == "padrao":
+        return f"{nomes}: padrão recorrente vs o resto do ano{analisados}"
+    return f"{nomes} nos anos anteriores, como risco para o período-alvo{analisados}"
 
 
 def _premissas_markdown(p: dict[str, Any]) -> str:
@@ -171,8 +209,10 @@ def _premissas_markdown(p: dict[str, Any]) -> str:
         f"- **Período-alvo:** {p['periodo_alvo']} ({p['origem_periodo']})\n"
         f"- **Escopo:** {kpis} · recorte: {recorte}\n"
         f"- **Dados disponíveis até:** {p['dados_ate'] or 'sem dados'}"
-        f" · janela recente: {p['janela_recente'] or '-'}\n"
-        f"- **Sazonalidade:** comparação com os {p['comparacao_sazonal']}\n"
+        + (f" · janela recente: {p['janela_recente']}" if p.get("janela_recente") else "")
+        + "\n"
+        + (f"- **Recorte citado:** {p['recorte']}\n" if p.get("recorte") else "")
+        + f"- **Sazonalidade:** {p['comparacao_sazonal']}\n"
         f"- **Queda real:** {p['criterio_queda_real']}\n\n"
     )
 
@@ -189,6 +229,16 @@ def _kpi_para_llm(a: KpiAvaliado, situacao: str) -> dict[str, Any]:
             round(a.variacao_yoy * 100, 1) if a.variacao_yoy is not None else None
         ),
         "serie_mensal": a.serie,
+        **({"ano_referencia": a.ano_referencia} if a.ano_referencia else {}),
+        **(
+            {
+                "vs_resto_do_ano_pct": {
+                    str(k): round(v * 100, 1) for k, v in a.vs_resto_do_ano.items()
+                }
+            }
+            if a.vs_resto_do_ano
+            else {}
+        ),
     }
 
 
@@ -198,9 +248,23 @@ def _contexto_relatorio(estado: EstadoAgente) -> str:
         {
             # Premissas já estão no topo (código); o redator só precisa do período-alvo.
             "periodo_alvo": estado.get("premissas", {}).get("periodo_alvo"),
+            "recorte": estado.get("premissas", {}).get("recorte"),
             "kpis_queda_real": [
-                _kpi_para_llm(f, "abaixo da meta e caindo vs o mesmo período dos anos anteriores")
+                _kpi_para_llm(
+                    f,
+                    "no período citado, historicamente abaixo da meta: risco para o período-alvo"
+                    if f.classificacao == "risco_sazonal"
+                    else "abaixo da meta e caindo vs o mesmo período dos anos anteriores",
+                )
                 for f in estado.get("fracos", [])
+            ],
+            # Saudáveis do recorte: o redator afirma "acima/dentro da meta" com número (#9, N4).
+            "kpis_saudaveis": [
+                _kpi_para_llm(k, "dentro ou acima da meta") for k in estado.get("saudaveis", [])
+            ],
+            "kpis_padrao_do_recorte": [
+                _kpi_para_llm(k, "padrão recorrente do período citado vs o resto do ano")
+                for k in estado.get("padroes", [])
             ],
             "kpis_sazonais": [
                 _kpi_para_llm(s, "abaixo da meta, em linha com o mesmo período dos anos anteriores")
@@ -224,7 +288,15 @@ def _contexto_recomendacao(estado: EstadoAgente) -> str:
     return json.dumps(
         {
             "periodo_alvo": estado.get("premissas", {}).get("periodo_alvo"),
-            "kpis_queda_real": [_kpi_para_llm(f, "queda real") for f in estado.get("fracos", [])],
+            "kpis_queda_real": [
+                _kpi_para_llm(
+                    f,
+                    "risco para o período-alvo: historicamente fraco, preparar"
+                    if f.classificacao == "risco_sazonal"
+                    else "queda real",
+                )
+                for f in estado.get("fracos", [])
+            ],
             "fontes": [
                 asdict(h)
                 for h in estado.get("hits", [])
@@ -262,13 +334,28 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         )
         # Acompanhamento herda do turno anterior o que a pergunta nova não cita (código, #7).
         plano = herdar(plano, estado.get("turno_anterior"))
+        # Período citado vem do texto, em código (#9).
+        recorte = recorte_citado(estado["pergunta"], deps.hoje())
+        if recorte and recorte.tipo == "passado" and plano.mes_citado:
+            # "julho de 2025" é sobre o passado: não vira mês-alvo (nem é herdado depois).
+            plano = plano.model_copy(update={"mes_citado": None})
+        if recorte is None and plano.mes_citado and "mes_citado" in plano.herdados:
+            # Mês-alvo herdado do turno anterior: a análise usa o mesmo recorte que a premissa.
+            recorte = Recorte("mes_alvo", (plano.mes_citado,))
         get_stream_writer()({"tipo": "plano", "plano": plano.model_dump()})
-        return {"plano": plano}
+        return {"plano": plano, "recorte": recorte}
 
     async def perna_quantitativa(estado: EstadoAgente) -> dict[str, Any]:
         escrever = get_stream_writer()
         escrever({"tipo": "etapa", "nome": "perna_quantitativa"})
         plano = estado["plano"]
+        recorte: Recorte | None = estado.get("recorte")
+        janela = cfg.meses_janela_recorte if recorte else cfg.meses_janela
+        if recorte and recorte.ano:
+            # Período passado: a janela cobre o ano pedido e os 2 anteriores (base do ano a ano).
+            hoje = deps.hoje()
+            janela = max(janela, min(60, 12 * (hoje.year - (recorte.ano - 2)) + hoje.month))
+        dados_ate: str | None = None
         avaliados: list[KpiAvaliado] = []
         sqls: list[str] = []
         avisos: list[str] = []
@@ -280,38 +367,61 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
         for kpi, eixo in executados:
             r = await executar_sql(
                 deps.engine,
-                sql_kpi(kpi, eixo, cfg.meses_janela),
+                sql_kpi(kpi, eixo, janela),
                 cfg.sql_teto_linhas,
                 cfg.sql_timeout_ms,
             )
             sqls.append(r.sql)
             escrever({"tipo": "sql", "kpi": kpi, "eixo": eixo, "sql": r.sql})
+            meses_sql = [str(ln["mes"]) for ln in r.linhas]
+            if meses_sql:  # "dados até" vem do banco, não da série exibida (recorte)
+                dados_ate = max([dados_ate or "", *meses_sql])
             if len(r.linhas) >= cfg.sql_teto_linhas:
                 avisos.append(
                     f"{kpi} por {eixo}: resultado no teto de linhas, série pode estar cortada"
                 )
-            avaliados += avaliar(
-                kpi,
-                eixo,
-                r.linhas,
-                cfg.meses_recentes,
-                cfg.limiar_fraco,
-                cfg.limiar_yoy,
-                cfg.meses_serie,
+            avaliados += (
+                avaliar_recorte(kpi, eixo, r.linhas, recorte, cfg.limiar_fraco, cfg.limiar_yoy)
+                if recorte
+                else avaliar(
+                    kpi,
+                    eixo,
+                    r.linhas,
+                    cfg.meses_recentes,
+                    cfg.limiar_fraco,
+                    cfg.limiar_yoy,
+                    cfg.meses_serie,
+                )
             )
+        if recorte and not avaliados and executados:
+            avisos.append("recorte citado sem dados completos no período; nada a comparar")
         if plano.valor and not any(_norm(a.dimensao) == _norm(plano.valor) for a in avaliados):
             avisos.append(
                 f"'{plano.valor}' não existe nos eixos analisados; a análise cobre todos os valores"
             )
         for aviso in avisos:
             escrever({"tipo": "aviso", "mensagem": aviso})
-        fracos = selecionar_fracos(avaliados, plano.valor, cfg.max_fracos)
+        # Queda real e risco sazonal do mês-alvo pedem causa e prescrição; o resto é descritivo.
+        fracos = sorted(
+            selecionar_fracos(avaliados, plano.valor, cfg.max_fracos)
+            + selecionar_fracos(avaliados, plano.valor, cfg.max_fracos, "risco_sazonal"),
+            key=lambda a: a.gap_medio,
+        )[: cfg.max_fracos]
         sazonais = selecionar_fracos(avaliados, plano.valor, cfg.max_fracos, "sazonal")
-        premissas = _premissas(plano, executados, avaliados, deps.hoje(), cfg)
+        saudaveis = sorted(
+            selecionar_fracos(avaliados, plano.valor, len(avaliados), "saudavel"),
+            key=lambda a: a.gap_medio,
+            reverse=True,  # melhor desempenho primeiro
+        )[: cfg.max_fracos]
+        padroes = selecionar_fracos(avaliados, plano.valor, cfg.max_fracos, "padrao")
+        premissas = _premissas(plano, executados, avaliados, deps.hoje(), cfg, recorte)
+        premissas["dados_ate"] = dados_ate
         escrever({"tipo": "premissas", "premissas": premissas})
         return {
             "fracos": fracos,
             "sazonais": sazonais,
+            "saudaveis": saudaveis,
+            "padroes": padroes,
             "premissas": premissas,
             "sqls": sqls,
             "avisos": avisos,
@@ -345,6 +455,14 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
                 continue  # sem dimensão não há filtro válido (ADR 0005)
             dimensao = Dimensao(**{_CAMPO_DIMENSAO[fraco.eixo]: fraco.dimensao})
             consulta = f"{estado['pergunta']} ({fraco.kpi} em {fraco.dimensao})"
+            recorte: Recorte | None = estado.get("recorte")
+            # Período citado: o "porquê" é daquele período (periodo_referencia, nunca
+            # data_ingestao); o que funcionou pode ser de qualquer época, salvo "X anteriores".
+            meses_recorte = sorted({p["mes"] for p in fraco.serie}) if recorte else []
+            periodos_por_colecao = {
+                "diagnostico": meses_recorte or None,
+                "prescricao": meses_recorte if recorte and recorte.anteriores else None,
+            }
             for colecao in ("diagnostico", "prescricao"):
                 try:
                     achados = await buscar(
@@ -354,6 +472,7 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
                         consulta,
                         kpi_alvo=fraco.kpi,
                         dimensao=dimensao,
+                        periodos=periodos_por_colecao[colecao],
                         limite=cfg.search_limite,
                     )
                 except ErroBusca as exc:

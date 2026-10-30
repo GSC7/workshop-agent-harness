@@ -9,6 +9,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from agent.grounding import MotivoAusencia, Recomendacao
 from agent.kpis import Eixo, Kpi, KpiAvaliado
+from agent.periodo import Recorte
 from agent.tools.search import Hit
 
 
@@ -56,6 +57,9 @@ class EstadoAgente(TypedDict, total=False):
     plano: Plano
     fracos: list[KpiAvaliado]  # queda real (meta e anos anteriores), pior primeiro
     sazonais: list[KpiAvaliado]  # abaixo da meta, mas no padrão histórico: sem prescrição
+    saudaveis: list[KpiAvaliado]  # dentro/acima da meta no recorte: o redator afirma com número
+    padroes: list[KpiAvaliado]  # recorte recorrente descrito (ex.: fim do ano vs resto do ano)
+    recorte: Recorte | None  # período citado na pergunta (#9)
     premissas: dict[str, Any]  # resolvidas em código e declaradas no topo do relatório
     sqls: Annotated[list[str], operator.add]  # SQL efetivamente executado (inspecionável)
     hits: list[Hit]
