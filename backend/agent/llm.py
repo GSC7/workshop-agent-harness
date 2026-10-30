@@ -34,12 +34,21 @@ Estrutura:
 `variacao_vs_anos_anteriores_pct` exatos (não recalcule). Depois, numa subseção "Dentro do padrão \
 histórico", cada item de `kpis_sazonais`: abaixo da meta mas igual ao mesmo período dos anos \
 anteriores — sazonalidade ou meta alta, não queda real.
+Se houver `kpis_saudaveis`, diga quais estão dentro ou acima da meta, com o \
+`desvio_vs_meta_pct` e a `variacao_vs_anos_anteriores_pct` — oportunidade, não problema. Se houver \
+`kpis_padrao_do_recorte`, descreva o padrão do período citado ano a ano pelo `vs_resto_do_ano_pct` \
+(ex.: "sobe ~11% no fim do ano em 2023 e 2024; em 2025 não subiu"), sem tratá-lo como problema. \
+Item com situação "risco para o período-alvo" é um período historicamente fraco que vai se \
+repetir: diga isso e trate-o como algo a preparar.
 ## Causas prováveis — só para queda real, a partir das fontes de `colecao` diagnostico, citando \
 cada uma entre colchetes com o campo `fonte` exato (ex.: [minio://corpus/diagnostico/...md]). \
 Cite a fonte só para o KPI de `para_kpi`/`para_dimensao`. Sem fonte de diagnóstico, diga que a \
 causa não está documentada.
 
 Se o contexto trouxer `avisos`, declare-os numa linha logo no início (limitações do run).
+Cada número pertence ao `kpi`, `eixo` e `dimensao` do seu item: NUNCA o atribua a um recorte \
+mais fino citado na pergunta (ex.: a pergunta cita Eletrônicos no marketplace, mas o item é o \
+marketplace inteiro — diga "o marketplace como um todo" e que o recorte combinado não foi medido).
 Não invente números nem fontes. Sem nenhum KPI em queda real, diga que não há queda real a \
 corrigir (citando os sazonais, se houver)."""
 

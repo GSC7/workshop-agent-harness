@@ -669,3 +669,134 @@ async def test_pergunta_fora_do_escopo_no_meio_da_conversa_nao_quebra_a_heranca(
     assert "clarificar" in [e.get("nome") for e in eventos]
     # o plano gravado continua com o recorte da conversa, p/ o turno seguinte herdar
     assert (final["plano"].kpis, final["plano"].valor) == (["taxa_recompra"], "Sul")
+
+
+def _linhas_julho_fraco():
+    # Conversão do site: julho sempre ~-33% da meta; junho acima. Formato (dim, mes, real, meta).
+    linhas = []
+    for ano in (2023, 2024, 2025):
+        linhas += [
+            ("site_proprio", f"{ano}-06", 0.032, 0.030),
+            ("site_proprio", f"{ano}-07", 0.020, 0.030),
+        ]
+    return linhas
+
+
+def _filtro(chamada):
+    return {
+        c.key: getattr(c.match, "value", None) or getattr(c.match, "any", None)
+        for c in chamada["query_filter"].must
+    }
+
+
+async def test_mes_alvo_historicamente_fraco_vira_risco_e_diagnostico_e_recortado_pelo_mes():
+    qdrant = QdrantFake(por_colecao={"diagnostico": [DIAG_SUL], "prescricao": [PRESC_SUL]})
+    plano = Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio")
+    deps = _deps(plano, _linhas_julho_fraco(), qdrant=qdrant)
+
+    eventos, final = await _rodar(
+        deps, pergunta="Como aumentar a conversão do site próprio em julho?"
+    )
+
+    assert [(f.dimensao, f.classificacao) for f in final["fracos"]] == [
+        ("site_proprio", "risco_sazonal")
+    ]
+    diag, presc = (_filtro(c) for c in qdrant.chamadas)
+    assert diag["periodo_referencia"] == ["2023-07", "2024-07", "2025-07"]
+    assert "periodo_referencia" not in presc  # o que funcionou pode ser de qualquer época
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert "julho" in premissas["recorte"]
+
+
+async def test_mes_no_plural_com_anteriores_recorta_tambem_a_prescricao():
+    qdrant = QdrantFake(por_colecao={"diagnostico": [DIAG_SUL], "prescricao": [PRESC_SUL]})
+    linhas = [r for r in _linhas_julho_fraco()]
+    linhas = [(d, m.replace("-07", "-11"), r, mt) for d, m, r, mt in linhas]
+    deps = _deps(
+        Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio"), linhas, qdrant=qdrant
+    )
+
+    await _rodar(
+        deps, pergunta="O que funcionou em novembros anteriores para aumentar a conversão?"
+    )
+
+    _, presc = (_filtro(c) for c in qdrant.chamadas)
+    assert presc["periodo_referencia"] == ["2023-11", "2024-11", "2025-11"]
+
+
+async def test_fim_do_ano_sem_ano_e_padrao_descritivo_sem_enriquecer():
+    qdrant, redator = QdrantFake(payloads=[DOC_SUL]), RedatorFake()
+    linhas = []
+    for ano, alta in ((2023, 1.10), (2024, 1.12), (2025, 0.98)):
+        linhas += [("total", f"{ano}-{m:02d}", 100.0, 100.0) for m in range(1, 10)]
+        linhas += [("total", f"{ano}-{m:02d}", 100.0 * alta, 100.0) for m in (10, 11, 12)]
+    deps = _deps(Plano(kpis=["ticket_medio"]), linhas, qdrant=qdrant, redator=redator)
+
+    _, final = await _rodar(deps, pergunta="O ticket médio sobe muito no fim do ano — é problema?")
+
+    assert final["fracos"] == [] and qdrant.chamadas == []
+    padrao = json.loads(redator.contextos[0])["kpis_padrao_do_recorte"][0]
+    assert padrao["vs_resto_do_ano_pct"] == {"2023": 10.0, "2024": 12.0, "2025": -2.0}
+
+
+async def test_redator_recebe_os_kpis_saudaveis_do_recorte():
+    redator = RedatorFake()
+    deps = _deps(
+        Plano(kpis=["faturamento"], eixo="regiao", valor="Nordeste"),
+        linhas_kpi({"Nordeste": 0.15}),
+        redator=redator,
+    )
+
+    await _rodar(deps)
+
+    saudaveis = json.loads(redator.contextos[0])["kpis_saudaveis"]
+    assert [s["dimensao"] for s in saudaveis] == ["Nordeste"]
+    assert saudaveis[0]["desvio_vs_meta_pct"] == 15.0
+
+
+async def test_dados_disponiveis_ate_vem_do_banco_e_nao_da_serie_do_recorte():
+    linhas = _linhas_julho_fraco() + [("site_proprio", "2026-06", 0.031, 0.030)]
+    deps = _deps(Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio"), linhas)
+
+    eventos, _ = await _rodar(deps, pergunta="Como aumentar a conversão do site próprio em julho?")
+
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert premissas["dados_ate"] == "2026-06"
+
+
+async def test_recorte_de_mes_herdado_no_acompanhamento_e_o_que_a_analise_usa():
+    # Bloqueante da revisão: premissa dizia julho (herdado) e a análise voltava aos recentes.
+    from agent.conversa import TurnoAnterior
+
+    turno = TurnoAnterior(
+        plano=Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio", mes_citado=7)
+    )
+    deps = _deps(Plano(eixo="canal", valor="site_proprio"), _linhas_julho_fraco())
+
+    eventos, final = await _rodar_turno(deps, "e no site próprio?", turno)
+
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert "julho" in (premissas["recorte"] or "")
+    assert [f.classificacao for f in final["fracos"]] == ["risco_sazonal"]
+
+
+async def test_periodo_passado_nao_vira_mes_alvo_no_plano():
+    deps = _deps(
+        Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio"), _linhas_julho_fraco()
+    )
+
+    eventos, _ = await _rodar(deps, pergunta="Como foi a conversão do site em julho de 2025?")
+
+    plano = next(e for e in eventos if e["tipo"] == "plano")["plano"]
+    premissas = next(e for e in eventos if e["tipo"] == "premissas")["premissas"]
+    assert plano["mes_citado"] is None and premissas["origem_periodo"] == "mês atual + 1"
+
+
+async def test_recorte_sem_dados_completos_avisa():
+    deps = _deps(
+        Plano(kpis=["taxa_conversao"], eixo="canal", valor="site_proprio"), _linhas_julho_fraco()
+    )
+
+    _, final = await _rodar(deps, pergunta="Como foi a conversão no fim de 2026?")
+
+    assert any("sem dados completos" in a for a in final["avisos"])

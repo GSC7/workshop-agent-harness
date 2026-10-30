@@ -72,7 +72,7 @@
   narrativa: N2
   intencao: secundario
   dispara_enriquecimento: true
-  pendente: "#9 — recorte temporal ('fim de 2025') e dimensão composta (categoria × canal)"
+  pendente: "#9b — dimensão composta: analisa o marketplace inteiro e o texto atribuía o número a Eletrônicos"
   pergunta: "Por que o faturamento de Eletrônicos no marketplace caiu no fim de 2025 e o que fazer?"
   sql_esperado: |
     SELECT extract(year FROM p.data_pedido)::int AS ano,
@@ -108,7 +108,6 @@
   narrativa: N3
   intencao: secundario
   dispara_enriquecimento: true
-  pendente: "#9 — recorte sazonal do mês citado ('em julho'); hoje compara os meses recentes"
   pergunta: "Como aumentar a conversão do site próprio em julho?"
   sql_esperado: |
     SELECT to_char(d, 'YYYY-MM') AS mes,
@@ -133,7 +132,7 @@
     o pop-up de desconto (resultado nulo em 2023).
 
 - id: n4-beleza-nordeste
-  pendente: "#9 — dimensão composta (categoria × região) e KPIs saudáveis fora do contexto do redator"
+  pendente: "#9b — dimensão composta: analisa Beleza no Brasil, não Beleza × Nordeste"
   criterios:
     - "Reconhece Beleza no Nordeste como saudável / acima da meta"
     - "Trata o recorte como oportunidade"
@@ -187,7 +186,6 @@
     evitar ações isoladas de ponto de venda como reforma de vitrine (resultado nulo).
 
 - id: n6-ticket-sazonal
-  pendente: "#9 — recorte do período citado ('fim do ano'); hoje compara os meses recentes"
   criterios:
     - "Reconhece a alta de novembro/dezembro como sazonal e esperada"
     - "Não trata a alta como problema"
