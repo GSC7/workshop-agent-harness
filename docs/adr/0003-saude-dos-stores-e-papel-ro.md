@@ -35,10 +35,29 @@ resposta razoável:
 
 - Store fora é visível (503) sem tirar o app do ar; o compose sobe mesmo com store degradado.
 - A defesa read-only existe no banco, independente dos guardrails da app (#2).
-- **Dívida registrada:**
-  - o `env_file: .env` injeta no container da API segredos que ela não usa (`POSTGRES_PASSWORD`,
+- **Dívida registrada (quitada na #26):**
+  - o `env_file: .env` injetava no container da API segredos que ela não usa (`POSTGRES_PASSWORD`,
     `AGENTE_RO_PASSWORD`);
-  - a API usa as credenciais root do MinIO.
+  - a API usava as credenciais root do MinIO.
 
-  Ideal: `env_file` enxuto + usuário MinIO com política restrita ao bucket `relatorios`. Tratar
-  quando a escrita de relatórios entrar (#4).
+  **Resolução (#26):**
+  - **Sem `env_file`:** a api tem um `environment` explícito, só com o que o `Settings` lê em
+    runtime. Os opcionais vêm como `${VAR:-}`, e o `Settings` usa `env_ignore_empty` (vazio =
+    default do código).
+  - **Teste de guarda:** `tests/test_compose_env.py` falha se entrar uma variável de admin
+    (Postgres, MinIO root, segredos de admin do Langfuse) ou uma que o `Settings` não lê.
+  - **Usuário restrito:** o serviço de execução única `minio-init` usa o root (só ali, na infra)
+    para criar o bucket e o usuário `agente-relatorios`. A política `relatorios-rw`
+    (`infra/minio/politica-relatorios.json`) dá só List/GetBucketLocation no bucket e
+    Get/PutObject nos objetos; o `corpus` fica inacessível à api.
+  - **Senha nova:** `MINIO_API_PASSWORD`, obrigatória.
+  - **Host:** a api usa o par `MINIO_API_*` se completo; senão, o par `MINIO_ROOT_*` inteiro
+    (`Settings.credenciais_minio`). Usuário e senha nunca são resolvidos separadamente: na 1ª
+    versão, um `.env` com `MINIO_API_PASSWORD` e sem `MINIO_API_USER` misturava o root com a senha
+    da api (achado da revisão). O seed segue com o root.
+  - **Reexecução converge:** o `minio-init` roda a cada `up`; `mc admin user add` sobre usuário
+    existente atualiza a senha, e `policy create` sobrescreve a política. Trocar a senha no `.env`
+    e subir de novo basta.
+  - **Pendente:** o root do MinIO ainda tem default `minioadmin` no compose (de antes da #26).
+  - **Criação do bucket no startup:** continua como rede de segurança, mas no compose quem cria é
+    o `minio-init` (a política não dá `CreateBucket` à api).

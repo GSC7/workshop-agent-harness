@@ -99,15 +99,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Cria os clientes dos stores uma vez; config ausente falha cedo e com mensagem clara."""
     if settings.database_url_ro is None:
         raise RuntimeError("DATABASE_URL_RO não definida (papel agente_ro)")
-    if settings.minio_root_user is None or settings.minio_root_password is None:
-        raise RuntimeError("credenciais do MinIO não definidas (MINIO_ROOT_USER/PASSWORD)")
+    credenciais = settings.credenciais_minio()
+    if credenciais is None:
+        raise RuntimeError("credenciais do MinIO não definidas (MINIO_API_USER/PASSWORD)")
+    usuario_minio, senha_minio = credenciais
 
     engine = create_async_engine(settings.database_url_ro.get_secret_value(), pool_pre_ping=True)
     qdrant = AsyncQdrantClient(url=settings.qdrant_url)
     minio = Minio(
         settings.minio_endpoint,
-        access_key=settings.minio_root_user,
-        secret_key=settings.minio_root_password.get_secret_value(),
+        access_key=usuario_minio,
+        secret_key=senha_minio.get_secret_value(),
         secure=settings.minio_secure,
         # Default do SDK re-tenta por longos segundos: com MinIO fora, travaria startup e health.
         http_client=urllib3.PoolManager(

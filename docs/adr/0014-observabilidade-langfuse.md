@@ -57,8 +57,8 @@ projeto não depende dele.
   que o `/chat` não espera o Langfuse (termina em menos de 3 s com o export pendurado). Os LLMs
   dos testes são fakes, então os spans de LLM só aparecem no smoke real.
 - Custo: mais 6 containers. ClickHouse e o worker são os mais pesados.
-- O `.env` passa a ter os segredos do Langfuse, e a api os recebe via `env_file` sem usá-los. É a
-  mesma dívida da #1 (segredos de admin no `env_file`), agora maior: o certo é a api receber só
-  as variáveis que usa (`environment` explícito).
+- O `.env` passa a ter os segredos do Langfuse. Até a #26, a api os recebia via `env_file` sem
+  usá-los. Desde a #26 (ADR 0003), ela recebe só `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`,
+  `LANGFUSE_HOST` e `LANGFUSE_TIMEOUT_S`, e os segredos de admin ficam nos serviços do Langfuse.
 - Na API pública do v4 (modo `events_only`), `/api/public/traces` não existe mais. Para
   inspecionar um run, use `/api/public/v2/observations?traceId=<trace_id>`.

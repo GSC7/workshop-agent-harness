@@ -92,35 +92,98 @@ services:
     volumes:
       - minio_data:/data
 
+  minio-init:
+    # Execução única: bucket de relatórios + usuário da api com política só nele (#26).
+    # O root do MinIO fica aqui, na infra; a api nunca o recebe. Idempotente.
+    image: cgr.dev/chainguard/minio:latest
+    container_name: workshop-minio-init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        pronto=0
+        for i in $$(seq 1 30); do
+          mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 && pronto=1 && break
+          sleep 1
+        done
+        [ "$$pronto" = 1 ] || { echo "minio não respondeu (ou root inválido) em 30 s"; exit 1; }
+        mc mb --ignore-existing local/relatorios
+        mc admin policy create local relatorios-rw /politica/politica-relatorios.json
+        mc admin user add local agente-relatorios "$$MINIO_API_PASSWORD"
+        # attach falha se já anexada (reexecução): o case abaixo é quem garante o estado final
+        # (a imagem chainguard não tem grep).
+        mc admin policy attach local relatorios-rw --user agente-relatorios || true
+        info=$$(mc admin user info local agente-relatorios)
+        case "$$info" in *relatorios-rw*) ;; *) echo "politica relatorios-rw ausente"; exit 1 ;; esac
+        echo "usuario agente-relatorios pronto (politica relatorios-rw)"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_API_PASSWORD: ${MINIO_API_PASSWORD:?defina MINIO_API_PASSWORD no .env}
+    volumes:
+      - ./infra/minio/politica-relatorios.json:/politica/politica-relatorios.json:ro
+
   api:
     build:
       context: .
       dockerfile: backend/Dockerfile
     container_name: workshop-api
     restart: unless-stopped
-    # Chaves (ANTHROPIC/OPENAI/AGENTE_RO/LANGFUSE_PUBLIC/SECRET_KEY) vêm do .env. `environment` abaixo
-    # tem precedência sobre env_file e fixa os hosts internos da rede do compose.
-    env_file:
-      - .env
+    # Sem env_file (#26, ADR 0003): só o que o Settings lê em runtime, nenhum segredo de admin.
+    # Opcionais vêm como ${VAR:-}; vazio = default do código (env_ignore_empty no Settings).
+    # tests/test_compose_env.py falha se entrar variável de admin ou que o Settings não lê.
     environment:
       # A API só fala com o schema negocio como agente_ro (somente-leitura). Sem conexão admin.
-      DATABASE_URL: ""
       DATABASE_URL_RO: postgresql+asyncpg://agente_ro:${AGENTE_RO_PASSWORD:?defina AGENTE_RO_PASSWORD no .env}@postgres:5432/${POSTGRES_DB:-workshop}
       # Runs do agente (schema harness) por papel próprio: só INSERT/SELECT em harness.runs.
       DATABASE_URL_HARNESS: postgresql+asyncpg://harness_rw:${HARNESS_RW_PASSWORD:?defina HARNESS_RW_PASSWORD no .env}@postgres:5432/${POSTGRES_DB:-workshop}
       QDRANT_URL: http://qdrant:6333
       # Host interno do MinIO (o .env usa localhost:9000, válido só fora do compose).
       MINIO_ENDPOINT: minio:9000
-      MINIO_BUCKET_RELATORIOS: ${MINIO_BUCKET_RELATORIOS:-relatorios}
+      MINIO_BUCKET_RELATORIOS: relatorios   # fixo: é o bucket da política do minio-init
+      # Usuário restrito ao bucket de relatórios (criado pelo minio-init), nunca o root.
+      MINIO_API_USER: agente-relatorios
+      MINIO_API_PASSWORD: ${MINIO_API_PASSWORD:?defina MINIO_API_PASSWORD no .env}
+      MINIO_SECURE: ${MINIO_SECURE:-}
+      # LLM e embeddings da query.
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LLM_MODEL_FORTE: ${LLM_MODEL_FORTE:-}
+      LLM_MODEL_RAPIDO: ${LLM_MODEL_RAPIDO:-}
+      LLM_ESFORCO_FORTE: ${LLM_ESFORCO_FORTE:-}
+      LLM_ESFORCO_RAPIDO: ${LLM_ESFORCO_RAPIDO:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      EMBED_MODEL: ${EMBED_MODEL:-}
+      EMBED_DIM: ${EMBED_DIM:-}
+      SEARCH_LIMITE: ${SEARCH_LIMITE:-}
+      # Ajustes da análise e dos guardrails (defaults no código).
+      KPI_MESES_JANELA: ${KPI_MESES_JANELA:-}
+      KPI_MESES_RECENTES: ${KPI_MESES_RECENTES:-}
+      KPI_MESES_SERIE: ${KPI_MESES_SERIE:-}
+      KPI_LIMIAR_FRACO: ${KPI_LIMIAR_FRACO:-}
+      KPI_LIMIAR_YOY: ${KPI_LIMIAR_YOY:-}
+      KPI_MAX_FRACOS: ${KPI_MAX_FRACOS:-}
+      SQL_TIMEOUT_KPI_MS: ${SQL_TIMEOUT_KPI_MS:-}
+      SQL_TETO_LINHAS: ${SQL_TETO_LINHAS:-}
+      SQL_TIMEOUT_MS: ${SQL_TIMEOUT_MS:-}
+      HEALTH_TIMEOUT_S: ${HEALTH_TIMEOUT_S:-}
       # Traces pela rede interna; sem depends_on: Langfuse fora não impede a api de subir (#11).
+      # Só as chaves do projeto: os segredos de admin do Langfuse ficam nos serviços dele.
       LANGFUSE_HOST: http://langfuse-web:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_TIMEOUT_S: ${LANGFUSE_TIMEOUT_S:-}
     depends_on:
       postgres:
         condition: service_healthy
       qdrant:
         condition: service_started
-      minio:
-        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
     # sem porta publicada: o acesso externo é só pelo nginx (prova o hop da issue #1)
     expose:
       - "8000"
