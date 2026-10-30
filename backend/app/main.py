@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import anyio
 import urllib3
 from fastapi import FastAPI
 from minio import Minio
@@ -23,6 +24,7 @@ from app.services.stores import (
     VerificadorQdrant,
     garantir_bucket,
 )
+from harness.observabilidade import Rastreamento, criar_rastreamento
 from harness.repo import RepositorioRunsPostgres
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,7 @@ def _servico_chat(
     qdrant: AsyncQdrantClient,
     embedder: EmbedderOpenAI | None,
     minio: Minio,
+    rastreamento: Rastreamento,
 ) -> ServicoChat | None:
     """Sem LLM ou sem persistência de runs (contrato), o /chat fica indisponível (503)."""
     chave = (
@@ -87,6 +90,7 @@ def _servico_chat(
         objetos=minio,
         bucket=settings.minio_bucket_relatorios,
         modelos={"provedor": provedor, "forte": forte, "rapido": rapido},
+        rastreamento=rastreamento,
     )
 
 
@@ -126,8 +130,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if settings.database_url_harness is not None
         else None
     )
+    rastreamento = criar_rastreamento(settings)
     app.state.servico_chat = _servico_chat(
-        engine, engine_harness, qdrant, app.state.embedder, minio
+        engine, engine_harness, qdrant, app.state.embedder, minio, rastreamento
     )
     app.state.verificadores = [
         VerificadorPostgres(engine),
@@ -137,6 +142,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Flush síncrono (até o timeout do exporter): numa thread, sem travar o loop.
+        await anyio.to_thread.run_sync(rastreamento.encerrar)
         if openai is not None:
             await openai.close()
         await qdrant.close()

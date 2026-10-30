@@ -10,10 +10,12 @@ from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 import anyio
+from langchain_core.callbacks import BaseCallbackHandler
 from langgraph.graph.state import CompiledStateGraph
 
 from harness.artefatos import ClienteObjetos, salvar_relatorio
 from harness.modelo import RegistroRun
+from harness.observabilidade import Rastreamento, SemRastreamento
 from harness.repo import RepositorioRuns
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,7 @@ class _Run:
     conversa_id: UUID
     pergunta: str
     inicio: float
+    trace_id: str | None = None
 
 
 def _sse(evento: dict[str, Any]) -> str:
@@ -43,16 +46,19 @@ class ServicoChat:
         objetos: ClienteObjetos,
         bucket: str,
         modelos: dict[str, str],
+        rastreamento: Rastreamento | None = None,
     ) -> None:
         self._grafo = grafo
         self._repo = repo
         self._objetos = objetos
         self._bucket = bucket
         self._modelos = modelos
+        self._rastreamento: Rastreamento = rastreamento or SemRastreamento()
 
     async def executar(self, pergunta: str, conversa_id: UUID | None = None) -> AsyncIterator[str]:
-        run = _Run(uuid4(), conversa_id or uuid4(), pergunta, time.monotonic())
-        run_id = run.id
+        run_id, conversa = uuid4(), conversa_id or uuid4()
+        trace_id, callbacks = self._iniciar_trace(run_id, conversa)
+        run = _Run(run_id, conversa, pergunta, time.monotonic(), trace_id)
         yield _sse({"tipo": "inicio", "run_id": str(run.id), "conversa_id": str(run.conversa_id)})
         final: dict[str, Any] = {}
         fontes: list[dict[str, Any]] = []
@@ -60,7 +66,14 @@ class ServicoChat:
             # Memória da conversa = os runs dela no harness (só os desta conversa).
             turno = await self._repo.turno_anterior(run.conversa_id)
             async for item in self._grafo.astream(
-                {"pergunta": pergunta, "turno_anterior": turno}, stream_mode=["custom", "values"]
+                {"pergunta": pergunta, "turno_anterior": turno},
+                stream_mode=["custom", "values"],
+                config={
+                    "callbacks": callbacks,
+                    "run_name": "agente_analitico",
+                    # Turnos da mesma conversa = mesma sessão no Langfuse.
+                    "metadata": {"langfuse_session_id": str(conversa), "run_id": str(run_id)},
+                },
             ):
                 # Com vários stream_mode, cada item é (modo, payload); as stubs não expressam isso.
                 modo, chunk = cast(tuple[str, dict[str, Any]], item)
@@ -90,6 +103,16 @@ class ServicoChat:
                     "mensagem": "não foi possível concluir a análise; tente novamente",
                 }
             )
+
+    def _iniciar_trace(
+        self, run_id: UUID, conversa_id: UUID
+    ) -> tuple[str | None, list[BaseCallbackHandler]]:
+        # Observabilidade não é caminho crítico: sem trace, o run segue igual.
+        try:
+            return self._rastreamento.iniciar(run_id, conversa_id)
+        except Exception:
+            logger.warning("run %s sem trace: falha ao iniciar o rastreamento", run_id)
+            return None, []
 
     def _registro(
         self,
@@ -121,6 +144,7 @@ class ServicoChat:
             sazonais=[asdict(a) for a in final.get("sazonais", [])],
             premissas=premissas,
             avisos=list(final.get("avisos", [])),
+            trace_id=run.trace_id,
         )
 
     async def _gravar_falha(

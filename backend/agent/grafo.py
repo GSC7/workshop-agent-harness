@@ -41,8 +41,9 @@ from agent.kpis import (
     sql_kpi_composto,
 )
 from agent.periodo import Recorte, mes_nomeado, periodo_alvo, recorte_citado
+from agent.rastro import como_tool
 from agent.state import EstadoAgente, Plano
-from agent.tools.run_sql import ErroExecucaoSQL, SQLRejeitado, executar_sql
+from agent.tools.run_sql import ErroExecucaoSQL, ResultadoSQL, SQLRejeitado, executar_sql
 from agent.tools.search import Dimensao, Embedder, ErroBusca, Hit, buscar
 
 logger = logging.getLogger(__name__)
@@ -346,13 +347,21 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
     cfg = deps.config
     cache_catalogo: list[ItemCatalogo] = []
 
+    async def sql(consulta: str, nome: str = "run_sql") -> ResultadoSQL:
+        """run_sql com os guardrails de sempre, registrado como tool no rastro do run."""
+        return await como_tool(
+            nome,
+            {"sql": consulta},
+            executar_sql(deps.engine, consulta, cfg.sql_teto_linhas, cfg.sql_timeout_ms),
+            lambda r: {"sql": r.sql, "linhas": len(r.linhas)},
+        )
+
     async def catalogo() -> list[ItemCatalogo]:
         """Nomes e ids de regiões/canais/categorias (uma vez por grafo); falha = vazio."""
         if not cache_catalogo:
             try:
-                r = await executar_sql(
-                    deps.engine, _SQL_CATALOGO, cfg.sql_teto_linhas, cfg.sql_timeout_ms
-                )
+                # Nome próprio: só o 1º run de cada grafo consulta (cache).
+                r = await sql(_SQL_CATALOGO, "run_sql:catalogo")
             except (SQLRejeitado, ErroExecucaoSQL):
                 logger.warning("catálogo de dimensões indisponível; sem recorte composto")
                 return []
@@ -434,12 +443,7 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
                 f"sem meta por {plano.eixo} para o KPI pedido; analisado nos eixos com meta"
             )
         for kpi, eixo in executados if not composto else []:
-            r = await executar_sql(
-                deps.engine,
-                sql_kpi(kpi, eixo, janela),
-                cfg.sql_teto_linhas,
-                cfg.sql_timeout_ms,
-            )
+            r = await sql(sql_kpi(kpi, eixo, janela))
             sqls.append(r.sql)
             escrever({"tipo": "sql", "kpi": kpi, "eixo": eixo, "sql": r.sql})
             meses_sql = [str(ln["mes"]) for ln in r.linhas]
@@ -463,12 +467,7 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
                 )
             )
         if composto:
-            r = await executar_sql(
-                deps.engine,
-                sql_kpi_composto(composto, janela),
-                cfg.sql_teto_linhas,
-                cfg.sql_timeout_ms,
-            )
+            r = await sql(sql_kpi_composto(composto, janela))
             sqls.append(r.sql)
             escrever({"tipo": "sql", "kpi": "faturamento", "eixo": executados[0][1], "sql": r.sql})
             if meses_sql := [str(ln["mes"]) for ln in r.linhas]:
@@ -564,15 +563,26 @@ def construir_grafo(deps: Dependencias) -> CompiledStateGraph[Any, Any, Any, Any
             }
             for colecao in ("diagnostico", "prescricao"):
                 try:
-                    achados = await buscar(
-                        deps.qdrant,
-                        deps.embedder,
-                        colecao,
-                        consulta,
-                        kpi_alvo=fraco.kpi,
-                        dimensao=dimensao,
-                        periodos=periodos_por_colecao[colecao],
-                        limite=cfg.search_limite,
+                    achados = await como_tool(
+                        "search",
+                        {
+                            "colecao": colecao,
+                            "query": consulta,
+                            "kpi_alvo": fraco.kpi,
+                            "dimensao": dimensao,
+                            "periodos": periodos_por_colecao[colecao],
+                        },
+                        buscar(
+                            deps.qdrant,
+                            deps.embedder,
+                            colecao,
+                            consulta,
+                            kpi_alvo=fraco.kpi,
+                            dimensao=dimensao,
+                            periodos=periodos_por_colecao[colecao],
+                            limite=cfg.search_limite,
+                        ),
+                        lambda hs: {"fontes": [h.fonte for h in hs]},
                     )
                 except ErroBusca as exc:
                     # Sem o "porquê" o relatório ainda tem os números: degrada, não aborta.

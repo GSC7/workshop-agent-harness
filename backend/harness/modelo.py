@@ -28,3 +28,4 @@ class RegistroRun:
     sazonais: list[dict[str, Any]] = field(default_factory=list)
     premissas: dict[str, Any] | None = None
     avisos: list[str] = field(default_factory=list)
+    trace_id: str | None = None  # trace do run no Langfuse (#11); None = sem observabilidade

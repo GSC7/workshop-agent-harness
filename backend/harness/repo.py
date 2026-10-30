@@ -26,11 +26,11 @@ _JSON = (
 _INSERT = text(
     "INSERT INTO harness.runs (id, pergunta, status, plano, fracos, sqls, fontes, relatorio,"
     " relatorio_uri, erro, duracao_ms, modelos, conversa_id, recomendacoes, sazonais, premissas,"
-    " avisos) VALUES (:id, :pergunta, :status,"
+    " avisos, trace_id) VALUES (:id, :pergunta, :status,"
     " CAST(:plano AS jsonb), CAST(:fracos AS jsonb), CAST(:sqls AS jsonb),"
     " CAST(:fontes AS jsonb), :relatorio, :relatorio_uri, :erro, :duracao_ms,"
     " CAST(:modelos AS jsonb), :conversa_id, CAST(:recomendacoes AS jsonb),"
-    " CAST(:sazonais AS jsonb), CAST(:premissas AS jsonb), CAST(:avisos AS jsonb))"
+    " CAST(:sazonais AS jsonb), CAST(:premissas AS jsonb), CAST(:avisos AS jsonb), :trace_id)"
 )
 
 # Só runs ok DESTA conversa: o filtro por conversa_id é o que impede vazamento entre chats.

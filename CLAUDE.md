@@ -8,7 +8,8 @@ Backend **FastAPI** (Python 3.13, `uv`) + **LangChain/LangGraph** (grafo determi
 livre). Frontend **React + Vite**. Stores: **Postgres** (schemas `negocio` + `harness`), **Qdrant**
 (3 coleções já populadas), **MinIO** (relatórios/gráficos). **nginx** = única porta exposta ao host.
 Embeddings OpenAI `text-embedding-3-large` (3072d), só para embeddar a *query* em runtime.
-**Langfuse** para observabilidade — *planejado, ainda não no `docker-compose.yml`*.
+**Langfuse** v4 para observabilidade: stack próprio no compose, UI em `:3000` pelo nginx, um trace
+por run (id em `harness.runs.trace_id`) — ADR 0014.
 
 ## Comandos
 - subir tudo: `docker compose up -d`
@@ -33,7 +34,8 @@ Embeddings OpenAI `text-embedding-3-large` (3072d), só para embeddar a *query* 
   parametrizada pela coleção, escolhida pelo nó (não por laço do LLM).
 - **Stores pré-populados são sagrados**: nunca `docker compose down -v` nem remover volumes
   (apaga ~5 anos de dados + os índices do Qdrant).
-- Cada run gravado no schema `harness` (+ Langfuse quando provisionado).
+- Cada run gravado no schema `harness` (+ trace no Langfuse, que **não** é caminho crítico: fora
+  do ar, o `/chat` segue).
 
 ## Onde fica o quê
 - regras por área (path-scoped via `paths:`, carregam só ao tocar a área): `.claude/rules/`
