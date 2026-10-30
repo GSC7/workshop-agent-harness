@@ -69,5 +69,38 @@ O PRD pede um critério objetivo de "bom o suficiente" antes de subir o código.
   agente foi reescrito sem ambiguidade (o critério aprovado não mudou), e depois disso 2 de 2
   execuções deram 1,00. Se a oscilação voltar, a próxima alavanca é a maioria de 3 julgamentos
   por caso.
+- **Maioria de 3 julgamentos (#27):** `JudgeMaioria` julga o mesmo relatório `k` vezes
+  (`EVAL_JUDGE_VOTOS` ou `--votos`, ímpar; padrão 3) e consolida **critério a critério** e o
+  `inventou_informacao` por maioria. A nota continua calculada em código, sobre a avaliação
+  consolidada. Um voto que falha fica de fora. Empate entre os válidos conta como **não
+  atendido** (conservador). Sem nenhum voto válido, o caso não é julgado. O relatório mostra a nota
+  de cada voto (ex.: `1.00 (1.00/0.67/1.00)`) e o JSON guarda os votos.
+  - **Medição (relatório fixo, para isolar o judge do agente; 5 repetições por relatório,
+    gpt-4o):**
+    - **relatórios atuais dos 7 casos:** 35 de 35 notas em 1,00 com 1 voto e com maioria. Não há
+      variância a reduzir hoje;
+    - **relatórios antigos guardados no `harness.runs`** (3 da C1 com o texto "propor melhorias",
+      4 da N1): com 1 voto, 3 de 35 notas fugiram da moda do relatório (0,00, 0,67 e 0,67, todas
+      na C1); com maioria, 2 de 35. O desvio padrão médio por relatório caiu de 0,095 para 0,076.
+      A N1 não oscilou;
+    - **no gate completo com maioria:** a N1 teve um voto 0,80 (a mesma oscilação da #9b),
+      absorvido pela maioria (`1.00 (0.80/1.00/1.00)`).
+  - **Leitura:** ganho modesto, coerente com a teoria. Se cada voto erra com probabilidade p, a
+    maioria de 3 erra com cerca de 3p². Ajuda onde a leitura é ambígua, não onde o judge tende a
+    errar sempre: num relatório da C1, a maioria também deu 0,00 uma vez. O que resolveu a C1 de
+    verdade foi reescrever o texto ambíguo (acima).
+  - **Custo:** 3 vezes as chamadas do judge (até 21 por execução, em paralelo por caso). O agente
+    roda uma vez só, e ele domina o tempo. Os tokens não foram medidos. `EVAL_JUDGE_VOTOS=1` volta
+    ao judge único. Valor par ou zero é recusado no `Settings` e na CLI.
+  - **Empate costuma ser falha de infraestrutura:** com 3 votos, empate só acontece quando um voto
+    falha (timeout, 429, contagem de critérios diferente, que também conta como falha). O empate
+    conta como não atendido, então ruído de infraestrutura pode baixar a nota. É conservador de
+    propósito, e o relatório mostra os votos falhos (`1 falho(s)`).
+  - **Reprodução:** `PYTHONPATH=backend uv run python -m evals.variancia --repeticoes 5` mede
+    os relatórios atuais (1 voto vs maioria) e grava `eval-variancia.json`. A medição com
+    relatórios antigos foi feita uma vez com os runs do `harness.runs`, com o SQL descrito no
+    PR da #27.
+  - **Padrão 3 e regra de empate:** cabem na issue ("maioria de 3"). Como mudam o que o gate
+    aprova e o custo, ficam sujeitos ao ok humano no PR.
 - Custo: cerca de 7 runs do agente e até 7 chamadas do judge por execução.
 - Limiares e critérios são decisão humana (HITL): mudar qualquer um exige atualizar este ADR.

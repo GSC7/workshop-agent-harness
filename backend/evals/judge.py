@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Protocol, cast
 
 from langchain_core.language_models import BaseChatModel
@@ -10,10 +12,21 @@ from pydantic import BaseModel, Field
 
 from evals.golden import Caso
 
+logger = logging.getLogger(__name__)
+
 
 class Criterio(BaseModel):
     criterio: str
     atendido: bool
+
+
+class Voto(BaseModel):
+    """Um julgamento individual, guardado para auditar a consolidação (#27)."""
+
+    atendidos: list[bool]
+    inventou_informacao: bool
+    nota: float
+    justificativa: str = ""  # a do voto divergente é a mais útil para auditar
 
 
 class Avaliacao(BaseModel):
@@ -22,6 +35,9 @@ class Avaliacao(BaseModel):
     criterios: list[Criterio]
     inventou_informacao: bool
     justificativa: str
+    # Maioria de k julgamentos (#27): os votos válidos e quantos falharam; vazio = voto único.
+    votos: list[Voto] = Field(default_factory=list)
+    votos_falhos: int = 0
 
 
 class Julgamento(BaseModel):
@@ -91,4 +107,75 @@ class JudgeLLM:
             ],
             inventou_informacao=julgamento.inventou_informacao,
             justificativa=julgamento.justificativa,
+        )
+
+
+class JudgeMaioria:
+    """Julga k vezes o mesmo relatório e consolida por maioria (critério a critério).
+
+    Uma leitura divergente do LLM não derruba nem aprova o caso sozinha. A nota continua
+    calculada em código, sobre a avaliação consolidada. Voto que falha fica de fora; empate
+    entre os válidos conta como NÃO atendido (conservador); sem voto válido, o caso não é julgado.
+    """
+
+    def __init__(self, judge: Judge, votos: int = 3) -> None:
+        if votos < 1 or votos % 2 == 0:
+            raise ValueError(f"votos do judge deve ser ímpar e positivo, recebido {votos}")
+        self._judge = judge
+        self._votos = votos
+
+    async def avaliar(self, caso: Caso, relatorio: str) -> Avaliacao:
+        resultados = await asyncio.gather(
+            *(self._judge.avaliar(caso, relatorio) for _ in range(self._votos)),
+            return_exceptions=True,
+        )
+        for r in resultados:
+            if isinstance(r, BaseException) and not isinstance(r, Exception):
+                raise r  # cancelamento não é voto falho
+            if isinstance(r, Exception):
+                logger.warning("voto do judge falhou no caso %s: %s", caso.id, type(r).__name__)
+        # Molde = critérios do golden: voto com outra contagem é falho, não reinterpretado.
+        validos = [
+            r
+            for r in resultados
+            if isinstance(r, Avaliacao) and len(r.criterios) == len(caso.criterios)
+        ]
+        if not validos:
+            raise ErroJudge(f"nenhum dos {self._votos} votos do judge foi válido")
+        if self._votos == 1:
+            return validos[0]
+
+        def maioria(marcas: list[bool]) -> bool:
+            return sum(marcas) * 2 > len(marcas)  # empate = False
+
+        criterios = [
+            Criterio(criterio=c, atendido=maioria([v.criterios[i].atendido for v in validos]))
+            for i, c in enumerate(caso.criterios)
+        ]
+        inventou = maioria([v.inventou_informacao for v in validos])
+        consolidado = [c.atendido for c in criterios]
+        # A justificativa é de um voto que concorda com o resultado (senão, a do 1º válido).
+        concorda = next(
+            (
+                v
+                for v in validos
+                if [c.atendido for c in v.criterios] == consolidado
+                and v.inventou_informacao == inventou
+            ),
+            validos[0],
+        )
+        return Avaliacao(
+            criterios=criterios,
+            inventou_informacao=inventou,
+            justificativa=concorda.justificativa,
+            votos=[
+                Voto(
+                    atendidos=[c.atendido for c in v.criterios],
+                    inventou_informacao=v.inventou_informacao,
+                    nota=nota_da_avaliacao(v),
+                    justificativa=v.justificativa,
+                )
+                for v in validos
+            ],
+            votos_falhos=len(resultados) - len(validos),
         )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     llm_esforco_rapido: Literal["low", "medium", "high"] | None = None
     # Judge do gate de avaliação (ADR 0011); ausente = mesmo modelo forte do relatório.
     llm_model_judge: str | None = None
+    # Maioria de k julgamentos por caso (#27, ADR 0011): ímpar; 1 = judge único.
+    eval_judge_votos: int = 3
     anthropic_api_key: SecretStr | None = None
 
     # Perna quantitativa (ADR 0006/0007): janela pelo último mês com dados; 27 meses cobrem os
@@ -73,6 +75,13 @@ class Settings(BaseSettings):
     # Guardrails do run_sql (LIMIT garantido e statement_timeout no banco).
     sql_teto_linhas: int = 500
     sql_timeout_ms: int = 5000
+
+    @field_validator("eval_judge_votos")
+    @classmethod
+    def _votos_impar(cls, v: int) -> int:
+        if v < 1 or v % 2 == 0:
+            raise ValueError("EVAL_JUDGE_VOTOS deve ser ímpar e positivo (maioria sem empate)")
+        return v
 
     def credenciais_minio(self) -> tuple[str, SecretStr] | None:
         """Par coerente: o da api se completo, senão o root inteiro — nunca usuário de um com a
