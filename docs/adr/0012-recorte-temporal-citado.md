@@ -66,6 +66,15 @@ dados:
     ano;
   - o ano de referência é o citado, ou o último com o recorte **completo**;
   - a janela da consulta sobe para 39 meses quando há recorte;
+  - **só os meses que a avaliação usa (#29):** em mês-alvo e período passado, a consulta filtra
+    pelos meses do recorte (`extract(month ...) IN (...)`, só inteiros 1–12). Faturamento por
+    categoria em "fim de 2023" (janela de 60 meses) caiu de **480 para 120 linhas** (teto de
+    500), medido no banco. O **padrão** ("fim do ano") segue com todos os meses, porque compara com
+    o resto do ano; por categoria, chega a 39 × 8 = 312 linhas. Com o filtro, o `vs_resto_do_ano`
+    some do mês-alvo e do passado, onde o prompt não o usa. "Dados até" vem de uma coluna
+    `dados_ate` do próprio SQL (último mês com pedidos), não da série filtrada. A recompra continua
+    olhando todo o histórico do cliente: o filtro é do pedido avaliado. O recorte composto (#9b)
+    tem uma dimensão só (no máximo 60 linhas) e fica sem filtro;
   - a série exibida é só a do recorte.
 - **Enriquecimento no recorte:**
   - o **diagnóstico** é filtrado por `periodo_referencia` dos meses do recorte (o "porquê" é

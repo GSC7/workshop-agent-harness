@@ -56,3 +56,33 @@ def test_meta_zero_nao_divide():
     linhas = [{"dimensao": "Sul", "mes": "2026-06", "realizado": 1.0, "meta": 0}]
 
     assert avaliar("faturamento", "regiao", linhas, 3, 0.10, 0.10) == []
+
+
+# ---- #29: só os meses que a avaliação usa ----
+
+
+@pytest.mark.parametrize(("kpi", "eixo"), [(k, e) for k, es in EIXOS_COM_META.items() for e in es])
+def test_filtro_de_meses_passa_no_guardrail_e_filtra_o_pedido(kpi, eixo):
+    sql = sql_kpi(kpi, eixo, 60, meses_do_ano=(10, 11, 12))
+    validar_sql(sql, 500)  # o guardrail aceita (re-renderiza o SQL; o trecho é conferido antes)
+
+    assert "extract(month FROM p.data_pedido) IN (10, 11, 12)" in sql
+    assert "dados_ate" in sql  # "dados até" segue vindo do banco, não da série filtrada
+
+
+def test_sem_filtro_de_meses_a_janela_e_continua():
+    assert "extract(month FROM p.data_pedido) IN" not in sql_kpi("faturamento", "regiao", 27)
+
+
+@pytest.mark.parametrize("meses", [(0,), (13,), ("7; DROP TABLE pedidos",), (True,)])
+def test_filtro_de_meses_so_aceita_mes_valido(meses):
+    with pytest.raises((ValueError, TypeError)):
+        sql_kpi("faturamento", "regiao", 27, meses_do_ano=meses)  # type: ignore[arg-type]
+
+
+def test_recompra_continua_olhando_todo_o_historico_do_cliente():
+    # O filtro de mês é do pedido avaliado; o "já tinha pedido antes" olha tudo.
+    sql = sql_kpi("taxa_recompra", "regiao", 60, meses_do_ano=(7,))
+
+    assert "a.data_pedido < p.data_pedido))" in sql
+    assert "a.data_pedido < p.data_pedido AND extract" not in sql

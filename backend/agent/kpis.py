@@ -7,6 +7,7 @@ recorte por valor (ex.: "Sul") é aplicado depois, sobre o resultado.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal, get_args
@@ -45,9 +46,9 @@ def pares(kpis: list[str] | None, eixo: str | None) -> list[tuple[str, str]]:
     return out
 
 
-def _base(kpi: str, eixo: str) -> str:
+def _base(kpi: str, eixo: str, meses_do_ano: Sequence[int] = ()) -> str:
     dim = _EIXO_SQL[eixo][0] if eixo != "total" else "0"
-    janela = "p.data_pedido >= lim.ini"
+    janela = f"p.data_pedido >= lim.ini{_filtro_meses(meses_do_ano, 'p.data_pedido')}"
     if kpi == "faturamento" and eixo == "categoria":
         # Faturamento por categoria é a receita dos itens (camada_semantica / golden N2).
         return (
@@ -80,14 +81,29 @@ def _base(kpi: str, eixo: str) -> str:
         f" count(*) AS ped FROM pedidos p CROSS JOIN lim WHERE {janela} GROUP BY 1, 2) a"
         f" JOIN (SELECT {dim_s} AS dim_id, date_trunc('month', s.data)::date AS mes,"
         " sum(s.sessoes) AS sess FROM sessoes_diarias s CROSS JOIN lim"
-        " WHERE s.data >= lim.ini GROUP BY 1, 2) s ON s.dim_id = a.dim_id AND s.mes = a.mes"
+        f" WHERE s.data >= lim.ini{_filtro_meses(meses_do_ano, 's.data')} GROUP BY 1, 2) s"
+        " ON s.dim_id = a.dim_id AND s.mes = a.mes"
     )
 
 
-def sql_kpi(kpi: str, eixo: str, meses: int) -> str:
-    """Realizado x meta por valor do eixo nos últimos `meses` com dados (janela pelo dado)."""
+def _filtro_meses(meses_do_ano: Sequence[int], coluna: str) -> str:
+    """Só meses válidos e inteiros entram no SQL (nada de texto de fora; bool não é mês)."""
+    if not all(type(m) is int and 1 <= m <= 12 for m in meses_do_ano):
+        raise ValueError(f"mês inválido: {meses_do_ano!r}")
+    lista = ", ".join(str(m) for m in sorted(set(meses_do_ano)))
+    return f" AND extract(month FROM {coluna}) IN ({lista})" if lista else ""
+
+
+def sql_kpi(kpi: str, eixo: str, meses: int, meses_do_ano: Sequence[int] = ()) -> str:
+    """Realizado x meta por valor do eixo nos últimos `meses` com dados (janela pelo dado).
+
+    `meses_do_ano` restringe aos meses que a avaliação usa (#29): um recorte de julho não
+    precisa dos outros 11 meses de cada ano (categoria × 60 meses chegava perto do teto). A
+    coluna `dados_ate` é o último mês com pedidos, para a premissa não sair da série filtrada.
+    """
     if eixo not in EIXOS_COM_META.get(kpi, ()):
         raise ValueError(f"sem meta para {kpi} por {eixo}")
+    _filtro_meses(meses_do_ano, "p.data_pedido")  # valida cedo, antes de montar o SQL
     meta_dim = {c: "IS NULL" for c in _COLUNAS_META}
     if eixo != "total":
         _, tabela, col_meta = _EIXO_SQL[eixo]
@@ -98,11 +114,12 @@ def sql_kpi(kpi: str, eixo: str, meses: int) -> str:
     cond_meta = " AND ".join(f"m.{c} {op}" for c, op in meta_dim.items())
     return (
         "WITH lim AS (SELECT (date_trunc('month', max(data_pedido))"
-        f" - interval '{int(meses) - 1} months')::date AS ini FROM pedidos),"
-        f" b AS ({_base(kpi, eixo)})"
+        f" - interval '{int(meses) - 1} months')::date AS ini,"
+        " to_char(max(data_pedido), 'YYYY-MM') AS ultimo FROM pedidos),"
+        f" b AS ({_base(kpi, eixo, meses_do_ano)})"
         f" SELECT {nome} AS dimensao, to_char(b.mes, 'YYYY-MM') AS mes,"
-        " b.realizado, m.valor_meta AS meta"
-        f" FROM b{join_dim}"
+        " b.realizado, m.valor_meta AS meta, lim.ultimo AS dados_ate"
+        f" FROM b{join_dim} CROSS JOIN lim"
         f" JOIN metas m ON m.kpi = '{kpi}' AND m.ano = extract(year FROM b.mes)"
         f" AND m.mes = extract(month FROM b.mes) AND {cond_meta}"
         " ORDER BY 1, 2"
