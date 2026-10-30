@@ -23,9 +23,12 @@ no padrão**.
 - **Correção:** % de critérios de aceite atendidos · **change-failure rate** = (issues reabertas +
   bugs contra issue merjada + PRs com mudança pedida) ÷ issues entregues.
 - **Aderência ao padrão:** distribuição de veredito do revisor (aprovado/ressalva/bloqueado) ·
-  invariantes violados · média de tentativas até o gate verde.
+  invariantes violados · mediana de tentativas até o gate verde, **só sobre registros com
+  `tentativas_confiavel: true`** (diga quantos ficaram de fora; com nenhum, "sem dado confiável").
 - **Throughput:** lead time por issue (criada → fechada/merge) · issues concluídas no período.
-- **Confiança:** taxa de autonomia (% merjado sem edição humana) · ações barradas por permissão/hook.
+- **Confiança:** taxa de autonomia (% merjado sem edição humana de código, pelo `git`) · intervenções
+  humanas por tipo (de `intervencoes`, só com `intervencoes_confiavel: true`) · ações barradas por
+  permissão/hook.
 
 ## 3. Emita o scorecard (markdown, pronto pra colar num board)
 
