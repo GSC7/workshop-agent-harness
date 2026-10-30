@@ -74,3 +74,8 @@ se era uma prescrição ou se explicava aquele KPI.
   deixam de ser clarificadas, mas nenhuma pergunta de vendas vira clarificação. Uma pergunta de
   fora do domínio que passa pelo filtro roda a análise e devolve números de vendas; é um custo
   aceito.
+- **Formato da citação (#28):** o extrator pega **toda URI `minio://` dentro de qualquer
+  colchete**: `[minio://a]`, `[Fonte: minio://a]` e listas como `[minio://a; minio://b]`. No eval
+  da #28, o redator rotulou uma citação válida e ela foi ignorada: a N2 reprovou por recall, e
+  uma fonte **inventada** no mesmo formato, ou no meio de uma lista, também escaparia de
+  `citacoes_sem_fonte`. Testes de regressão para os dois lados.

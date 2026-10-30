@@ -214,3 +214,29 @@ def test_dimensao_composta_nao_casa_com_so_uma_das_partes():
     )
 
     assert validas == []
+
+
+def test_citacao_com_rotulo_fonte_e_reconhecida():
+    # Regressão (eval da #28): o redator escreveu "[Fonte: minio://...]" e a citação válida foi
+    # ignorada — a N2 reprovou por recall, e uma fonte inventada no mesmo formato escaparia.
+    from agent.grounding import citacoes_validas
+
+    texto = f"Comissão subiu [Fonte: {ATRASOS}] e frete [fontes: {FRETE}]."
+
+    assert citacoes_validas(texto, HITS) == [ATRASOS, FRETE]
+
+
+def test_fonte_inventada_com_rotulo_tambem_e_apontada():
+    inventada = "minio://corpus/diagnostico/2099-01-inventada.md"
+
+    assert citacoes_sem_fonte(f"Causa: [Fonte: {inventada}]", HITS) == [inventada]
+
+
+def test_varias_fontes_no_mesmo_colchete_sao_todas_conferidas():
+    inventada = "minio://corpus/diagnostico/2099-01-inventada.md"
+    texto = f"Causas [Fonte: {ATRASOS}, {inventada}] e [{FRETE}; {BRINDE}]."
+
+    from agent.grounding import citacoes_validas
+
+    assert citacoes_validas(texto, HITS) == [ATRASOS, FRETE, BRINDE]
+    assert citacoes_sem_fonte(texto, HITS) == [inventada]  # não escapa no meio da lista

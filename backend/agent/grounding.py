@@ -14,7 +14,17 @@ from pydantic import BaseModel, Field
 
 from agent.tools.search import Hit
 
-_CITACAO = re.compile(r"\[(minio://[^\]\s]+)\]")
+# Toda URI dentro de qualquer colchete: "[minio://a]", "[Fonte: minio://a]", "[minio://a; b]".
+# Só o URI exato do run casa; o rótulo varia com o LLM, e uma fonte inventada no meio de uma
+# lista não pode escapar da conferência (#28).
+_COLCHETE = re.compile(r"\[([^\[\]]*minio://[^\[\]]*)\]")
+_URI = re.compile(r"minio://[^\s,;\]\[]+")
+
+
+def _citacoes(texto: str) -> list[str]:
+    return [uri for grupo in _COLCHETE.findall(texto) for uri in _URI.findall(grupo)]
+
+
 _RESULTADOS_FALHA = ("negativo", "nulo")
 
 
@@ -174,18 +184,18 @@ def historico_markdown(hits: Sequence[Hit]) -> str:
 def citacoes_sem_fonte(texto: str, hits: Sequence[Hit]) -> list[str]:
     """Citações [minio://...] do texto livre que não são fontes recuperadas neste run."""
     fontes = {h.fonte for h in hits}
-    return list(dict.fromkeys(c for c in _CITACAO.findall(texto) if c not in fontes))
+    return list(dict.fromkeys(c for c in _citacoes(texto) if c not in fontes))
 
 
 def citacoes_validas(texto: str, hits: Sequence[Hit]) -> list[str]:
     fontes = {h.fonte for h in hits}
-    return list(dict.fromkeys(c for c in _CITACAO.findall(texto) if c in fontes))
+    return list(dict.fromkeys(c for c in _citacoes(texto) if c in fontes))
 
 
 def citacoes_de_prescricao(texto: str, hits: Sequence[Hit]) -> list[str]:
     """Prescrição citada no texto livre: recomendação só pode sair na seção validada."""
     prescricoes = _prescricoes(hits)
-    return list(dict.fromkeys(c for c in _CITACAO.findall(texto) if c in prescricoes))
+    return list(dict.fromkeys(c for c in _citacoes(texto) if c in prescricoes))
 
 
 def acompanhamento_markdown(retomadas: Sequence[Recomendacao]) -> str:
