@@ -189,3 +189,28 @@ def test_relatorio_anterior_nao_sustenta_recomendacao_nova():
     validas, descartadas = validar_recomendacoes([_rec(anterior)], hits)
 
     assert validas == [] and "relatório anterior" in descartadas[0][1]
+
+
+def test_dimensao_composta_escrita_com_outro_separador_casa():
+    bundle = "minio://corpus/prescricao/2025-11-eletronicos-bundle-kit.md"
+    hits = [_hit_multi(bundle, [("faturamento", "Eletrônicos × marketplace")])]
+    recs = [
+        _rec(bundle, kpi="faturamento", dimensao=d)
+        for d in ("Eletrônicos x marketplace", "Eletronicos / marketplace")
+    ]
+
+    validas, descartadas = validar_recomendacoes(recs, hits)
+
+    assert descartadas == []
+    assert [r.dimensao for r in validas] == ["Eletrônicos × marketplace"]
+
+
+def test_dimensao_composta_nao_casa_com_so_uma_das_partes():
+    bundle = "minio://corpus/prescricao/2025-11-eletronicos-bundle-kit.md"
+    hits = [_hit_multi(bundle, [("faturamento", "Eletrônicos × marketplace")])]
+
+    validas, _ = validar_recomendacoes(
+        [_rec(bundle, kpi="faturamento", dimensao="marketplace")], hits
+    )
+
+    assert validas == []

@@ -91,6 +91,9 @@ class EngineFake:
     executados: list[str] = field(default_factory=list)
     conexoes: int = 0
     transacao_aberta: bool = False
+    # Respostas por trecho do SQL (ex.: catálogo vs KPI composto); senão, colunas/linhas.
+    por_trecho: dict[str, tuple[list[str], list[tuple[Any, ...]]]] = field(default_factory=dict)
+    atraso: float = 0.0  # segundos por instrução: runs concorrentes se intercalam
 
     @asynccontextmanager
     async def connect(self) -> AsyncIterator[EngineFake]:
@@ -108,8 +111,13 @@ class EngineFake:
     async def exec_driver_sql(self, sql: str) -> _ResultadoFake:
         assert self.transacao_aberta, "instrução fora de transação"
         self.executados.append(sql)
+        if self.atraso:
+            await asyncio.sleep(self.atraso)
         if not sql.startswith("SET") and self.erro is not None:
             raise self.erro
+        for trecho, (colunas, linhas) in self.por_trecho.items():
+            if trecho in sql:
+                return _ResultadoFake(colunas, linhas)
         return _ResultadoFake(self.colunas, self.linhas)
 
 
@@ -245,3 +253,17 @@ class RecomendadorFake:
         if self.erro is not None:
             raise self.erro
         return self.recomendacoes
+
+
+CATALOGO_SQL = (
+    ["eixo", "id", "nome"],
+    [
+        ("canal", 1, "site_proprio"),
+        ("canal", 2, "marketplace"),
+        ("canal", 3, "loja_fisica"),
+        ("categoria", 1, "Eletrônicos"),
+        ("categoria", 4, "Beleza"),
+        ("regiao", 2, "Nordeste"),
+        ("regiao", 5, "Sul"),
+    ],
+)

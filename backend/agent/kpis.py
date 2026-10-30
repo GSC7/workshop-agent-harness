@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal, get_args
 
+from agent.composto import Composto
 from agent.periodo import Recorte
 
 Kpi = Literal["faturamento", "ticket_medio", "taxa_recompra", "taxa_conversao"]
@@ -124,6 +125,9 @@ class KpiAvaliado:
     classificacao: Classificacao
     serie: list[dict[str, Any]]  # [{mes, realizado, meta}] recentes, p/ o relatório e a UI
     ano_referencia: int | None = None  # ano do recorte avaliado (#9)
+    # Dimensão composta (#9b): sem meta própria (só ano a ano) e filtro do payload p/ a busca.
+    sem_meta: bool = False
+    filtro: dict[str, str] = field(default_factory=dict)
     # Recorte vs o resto do mesmo ano, por ano (ex.: fim do ano +11% em 2024).
     vs_resto_do_ano: dict[int, float] = field(default_factory=dict)
 
@@ -311,3 +315,83 @@ def avaliar_recorte(
             )
         )
     return sorted(avaliados, key=lambda a: a.gap_medio)
+
+
+def sql_kpi_composto(composto: Composto, meses: int) -> str:
+    """Faturamento (receita dos itens) por mês no recorte categoria × canal/região.
+
+    Filtro por ids inteiros do catálogo do banco; o rótulo vem dos nomes no próprio banco.
+    Não há meta composta em negocio.metas: a avaliação é só ano a ano.
+    """
+    col, tabela = (
+        ("p.canal_id", "canais") if composto.eixo_b == "canal" else ("p.regiao_id", "regioes")
+    )
+    return (
+        "WITH lim AS (SELECT (date_trunc('month', max(data_pedido))"
+        f" - interval '{int(meses) - 1} months')::date AS ini FROM pedidos)"
+        " SELECT c.nome || ' × ' || o.nome AS dimensao,"
+        " to_char(date_trunc('month', p.data_pedido), 'YYYY-MM') AS mes,"
+        " sum(i.quantidade * i.preco_unitario) AS realizado"
+        " FROM itens_pedido i JOIN pedidos p ON p.id = i.pedido_id AND p.status = 'pago'"
+        " JOIN produtos pr ON pr.id = i.produto_id JOIN categorias c ON c.id = pr.categoria_id"
+        f" JOIN {tabela} o ON o.id = {col} CROSS JOIN lim"
+        f" WHERE p.data_pedido >= lim.ini AND pr.categoria_id = {int(composto.categoria.id)}"
+        f" AND {col} = {int(composto.outro.id)}"
+        " GROUP BY 1, 2 ORDER BY 2"
+    )
+
+
+def avaliar_composto(
+    eixo_b: str,
+    filtro: dict[str, str],
+    linhas: list[dict[str, Any]],
+    recorte: Recorte | None,
+    meses_recentes: int,
+    limiar_yoy: float,
+) -> list[KpiAvaliado]:
+    """Sem meta composta: queda real = caiu além do limiar vs o mesmo período 1-2 anos antes."""
+    por_mes = {str(ln["mes"]): _realizado(ln) for ln in linhas}
+    validos = {m: r for m, r in por_mes.items() if r is not None}
+    if not validos:
+        return []
+    if recorte is not None:
+        anos = sorted({int(m[:4]) for m in validos})
+        completos = [a for a in anos if all(f"{a:04d}-{mm:02d}" in validos for mm in recorte.meses)]
+        ref: int | None
+        if recorte.ano is not None:
+            ref = recorte.ano if recorte.ano in completos else None
+        else:
+            ref = completos[-1] if completos else None
+        if ref is None:
+            return []
+        alvo = [f"{ref:04d}-{mm:02d}" for mm in recorte.meses]
+    else:
+        alvo = sorted(validos)[-meses_recentes:]
+
+    def mesmo(m: str, anos: int) -> str:
+        return f"{int(m[:4]) - anos:04d}{m[4:]}"
+
+    razoes = []
+    for m in alvo:
+        base = [validos[b] for a in (1, 2) if (b := mesmo(m, a)) in validos and validos[b] > 0]
+        if base:
+            razoes.append(validos[m] / (sum(base) / len(base)))
+    if not razoes:
+        return []  # sem histórico comparável não há como classificar sem meta
+    yoy = sum(razoes) / len(razoes) - 1
+    classe: Classificacao = "queda_real" if yoy < -limiar_yoy else "saudavel"
+    serie_meses = sorted({x for m in alvo for x in (mesmo(m, 2), mesmo(m, 1), m) if x in validos})
+    return [
+        KpiAvaliado(
+            kpi="faturamento",
+            eixo=f"categoria×{eixo_b}",
+            dimensao=str(linhas[0]["dimensao"]),
+            gap_medio=yoy,  # sem meta: o desvio exposto é o ano a ano (sem_meta=True)
+            variacao_yoy=yoy,
+            classificacao=classe,
+            serie=[{"mes": m, "realizado": validos[m], "meta": None} for m in serie_meses],
+            ano_referencia=int(alvo[-1][:4]),
+            sem_meta=True,
+            filtro=dict(filtro),
+        )
+    ]
